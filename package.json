@@ -1,0 +1,17 @@
+{
+  "name": "whatsapp-comprobantes-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp que recibe fotos de comprobantes y los archiva en Google Sheets",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test-local": "node test-local.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "googleapis": "^140.0.1",
+    "@anthropic-ai/sdk": "^0.27.0"
+  }
+}
