@@ -71,9 +71,28 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+    // Si tocó una opción del menú (lista interactiva), confirmamos y le
+    // pedimos que mande la foto/PDF de ese tipo de documento.
+    if (message.type === "interactive" && message.interactive?.type === "list_reply") {
+      const opcion = message.interactive.list_reply;
+      await enviarMensajeTexto(
+        remitente.telefono,
+        `Perfecto, *${opcion.title}*. Mandame la foto o el PDF del documento cuando quieras.`
+      );
+      return;
+    }
+
     const esImagen = message.type === "image";
     const esDocumentoPdf =
       message.type === "document" && message.document?.mime_type === "application/pdf";
+
+    // Si escribió texto (sin conversación pendiente) — probablemente un
+    // saludo o "hola" — le mostramos el menú de opciones en vez de procesar
+    // nada, así elige qué quiere registrar.
+    if (message.type === "text") {
+      await enviarMenuPrincipal(remitente.telefono);
+      return;
+    }
 
     if (!esImagen && !esDocumentoPdf) {
       await enviarMensajeTexto(
@@ -96,8 +115,15 @@ app.post("/webhook", async (req, res) => {
     const mediaId = esImagen ? message.image.id : message.document.id;
     const { buffer, mediaType } = await descargarMedia(mediaId);
 
+    // WhatsApp informa "timestamp" (segundos Unix) del momento en que se
+    // envió el mensaje, que es mucho más preciso que la hora del servidor,
+    // sobre todo si después hay preguntas de por medio antes de guardar.
+    const fechaMensaje = message.timestamp
+      ? new Date(Number(message.timestamp) * 1000).toISOString()
+      : new Date().toISOString();
+
     const listaDatos = await extraerDatosComprobante(buffer, mediaType);
-    await iniciarOFinalizarFlujo(remitente, listaDatos);
+    await iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje);
   } catch (err) {
     console.error("Error procesando mensaje:", err);
   }
@@ -107,11 +133,11 @@ app.post("/webhook", async (req, res) => {
  * Decide si hace falta preguntar algo antes de guardar (ej. número de
  * factura de un pago), o si ya podemos guardar directo en la planilla.
  */
-async function iniciarOFinalizarFlujo(remitente, listaDatos) {
+async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje) {
   const preguntas = construirPreguntas(listaDatos);
 
   if (preguntas.length === 0) {
-    await guardarComprobante(listaDatos, remitente);
+    await guardarComprobante(listaDatos, remitente, fechaMensaje);
     await enviarMensajeTexto(remitente.telefono, construirResumen(listaDatos));
     return;
   }
@@ -121,6 +147,7 @@ async function iniciarOFinalizarFlujo(remitente, listaDatos) {
     listaDatos,
     preguntas,
     indice: 0,
+    fechaMensaje,
   });
   await enviarMensajeTexto(remitente.telefono, preguntas[0].texto);
 }
@@ -172,7 +199,7 @@ async function manejarRespuesta(remitente, textoRespuesta) {
 
   // No quedan más preguntas: guardamos todo junto y mandamos el resumen final.
   conversacionesPendientes.delete(remitente.telefono);
-  await guardarComprobante(estado.listaDatos, estado.remitente);
+  await guardarComprobante(estado.listaDatos, estado.remitente, estado.fechaMensaje);
   await enviarMensajeTexto(estado.remitente.telefono, construirResumen(estado.listaDatos));
 }
 
@@ -211,6 +238,48 @@ function detectarTipoImagen(buffer, mimeTypeInformado) {
   }
   // Si no reconocemos la firma, usamos lo que informó WhatsApp como respaldo.
   return mimeTypeInformado || "image/jpeg";
+}
+
+/** Envía el menú de opciones (lista interactiva) con los tipos de documento. */
+async function enviarMenuPrincipal(to) {
+  await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: { type: "text", text: "Registrar operación" },
+        body: { text: "Buenas! ¿Le gustaría registrar alguna operación? A continuación elija la opción, por favor." },
+        footer: { text: "Después de elegir, mandá la foto o el PDF" },
+        action: {
+          button: "Ver opciones",
+          sections: [
+            {
+              title: "Tipos de documento",
+              rows: [
+                { id: "transferencia", title: "Transferencia", description: "Comprobante de transferencia bancaria" },
+                { id: "deposito", title: "Depósito", description: "Boleta de depósito" },
+                { id: "cheque", title: "Cheque", description: "Foto de un cheque" },
+                { id: "efectivo", title: "Efectivo", description: "Recibo de pago en efectivo" },
+                { id: "factura", title: "Factura", description: "Factura electrónica" },
+                { id: "nota_credito", title: "Nota de crédito", description: "Nota de crédito electrónica" },
+                { id: "nota_remision", title: "Nota de remisión", description: "Remisión de mercadería" },
+                { id: "remision_combustible", title: "Remisión de combustible", description: "Ticket de carga de combustible" },
+                { id: "recibo_viatico", title: "Recibo de viático", description: "Recibo de dinero entregado" },
+                { id: "lectura_surtidor", title: "Lectura de surtidor", description: "Foto del totalizador del pico" },
+              ],
+            },
+          ],
+        },
+      },
+    }),
+  });
 }
 
 /** Envía un mensaje de texto de vuelta al remitente. */
