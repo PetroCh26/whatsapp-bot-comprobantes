@@ -25,6 +25,8 @@ const SHEET_HEADERS = [
   "Moneda",
   "Banco / Entidad",
   "Nro Operación / Cheque",
+  "Numeral",
+  "Pico",
   "Firmante",
   "C.I. Firmante",
   "Emisor factura",
@@ -43,7 +45,7 @@ const SHEET_HEADERS = [
   "Estado",
 ];
 
-const ULTIMA_COLUMNA = "AN"; // 40 columnas: A hasta AN
+const ULTIMA_COLUMNA = "AP"; // 42 columnas: A hasta AP
 
 async function getSheetsClient() {
   // En producción (Railway, Render, etc.) es más seguro pegar el contenido
@@ -111,6 +113,8 @@ function filaResto(datos) {
     datos.moneda,
     datos.banco_o_entidad,
     datos.numero_operacion,
+    datos.numeral,
+    datos.pico,
     datos.firmante,
     datos.ci_firmante,
     datos.emisor_factura,
@@ -136,10 +140,13 @@ function filaResto(datos) {
  * ítems, genera una fila por cada ítem, repitiendo los datos del documento.
  * @param {object[]} listaDatos - array de comprobantes extraídos por ocr.js
  * @param {object} remitente - { telefono, nombre }
+ * @param {string} [fechaRegistro] - fecha ISO a usar como "Fecha de registro"
+ *   (ej. la fecha real en que WhatsApp recibió la foto). Si no se pasa, se
+ *   usa el momento actual como respaldo.
  */
-export async function guardarComprobante(listaDatos, remitente) {
+export async function guardarComprobante(listaDatos, remitente, fechaRegistro) {
   const sheets = await getSheetsClient();
-  const registro = new Date().toISOString();
+  const registro = fechaRegistro || new Date().toISOString();
   const filas = [];
 
   for (const datos of listaDatos) {
