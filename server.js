@@ -68,7 +68,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-/** Descarga la imagen desde los servidores de Meta usando el media id. */
+/** Descarga la imagen/documento desde los servidores de Meta usando el media id. */
 async function descargarMedia(mediaId) {
   const metaRes = await fetch(`${GRAPH_URL}/${mediaId}`, {
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
@@ -79,7 +79,30 @@ async function descargarMedia(mediaId) {
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
   });
   const arrayBuffer = await fileRes.arrayBuffer();
-  return { buffer: Buffer.from(arrayBuffer), mediaType: mime_type };
+  const buffer = Buffer.from(arrayBuffer);
+
+  // WhatsApp a veces informa un mime_type genérico (ej. "image/jpeg") aunque el
+  // archivo real sea otro formato (ej. PNG), y Anthropic rechaza esa
+  // inconsistencia. Para imágenes, detectamos el tipo real mirando los primeros
+  // bytes del archivo en vez de confiar ciegamente en lo que dice WhatsApp.
+  const mediaType = mime_type === "application/pdf" ? mime_type : detectarTipoImagen(buffer, mime_type);
+
+  return { buffer, mediaType };
+}
+
+/** Detecta el tipo real de una imagen por su firma de bytes (magic numbers). */
+function detectarTipoImagen(buffer, mimeTypeInformado) {
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return "image/png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (buffer.length >= 12 && buffer.toString("ascii", 8, 12) === "WEBP") {
+    return "image/webp";
+  }
+  // Si no reconocemos la firma, usamos lo que informó WhatsApp como respaldo.
+  return mimeTypeInformado || "image/jpeg";
 }
 
 /** Envía un mensaje de texto de vuelta al remitente. */
