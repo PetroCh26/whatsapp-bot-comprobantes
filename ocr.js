@@ -17,7 +17,7 @@ por cada documento encontrado, en este formato exacto. Si un dato no aparece, po
 
 [
   {
-    "tipo_comprobante": "transferencia" | "deposito" | "cheque" | "efectivo" | "factura" | "nota_credito" | "nota_remision" | "remision_combustible" | "recibo_viatico" | "otro",
+    "tipo_comprobante": "transferencia" | "deposito" | "cheque" | "efectivo" | "factura" | "nota_credito" | "nota_remision" | "remision_combustible" | "recibo_viatico" | "lectura_surtidor" | "otro",
     "nombre_cliente": string | null,
     "ruc_cliente": string | null,
     "nombre_beneficiario": string | null,
@@ -42,6 +42,8 @@ por cada documento encontrado, en este formato exacto. Si un dato no aparece, po
     "moneda": "PYG" | "USD" | "otro" | null,
     "banco_o_entidad": string | null,
     "numero_operacion": string | null,
+    "numeral": number | null,
+    "pico": string | null,
     "firmante": string | null,
     "ci_firmante": string | null,
     "emisor_factura": string | null,
@@ -145,12 +147,22 @@ Reglas por tipo de documento:
   con la remisión de combustible relacionada. "fecha_comprobante" es la fecha del
   recibo.
 
+- LECTURA DE SURTIDOR (foto del contador/totalizador mecánico de un surtidor de
+  combustible, sin comprobante de venta ni cliente involucrado — solo una etiqueta con
+  el número de pico y una ruedita numérica con la lectura): "pico" es el identificador
+  del pico/surtidor tal como aparece (ej. "PICO 4"), "numeral" es el número completo que
+  muestra el totalizador (ej. 2172), "concepto" poné "Lectura de totalizador". No hay
+  cliente, monto, moneda ni fecha visible en este tipo de imagen: dejá esos campos en
+  null (la fecha en que se registra el mensaje ya queda guardada aparte,
+  automáticamente, en la columna "Fecha de registro").
+
 Para cualquier documento que NO sea factura, nota de crédito, nota de remisión o
 remisión de combustible, dejá "items" como un array vacío []. Para cualquier documento
 que no sea factura o nota de crédito, dejá "condicion_venta" en null. Para cualquier
 documento que no sea nota de remisión o remisión de combustible, dejá los campos de
 transporte (transportista, chofer, ci_chofer, vehiculo, matricula_vehiculo,
-direccion_salida, direccion_entrega, km_recorrido, motivo_traslado) en null.
+direccion_salida, direccion_entrega, km_recorrido, motivo_traslado) en null. Para
+cualquier documento que no sea lectura de surtidor, dejá "numeral" y "pico" en null.
 
 Usá "observaciones" solo para datos sueltos que no encajen en ningún campo anterior.
 Aunque solo haya un documento en la imagen, devolvé igual un array con un solo elemento.
@@ -211,6 +223,8 @@ export async function extraerDatosComprobante(fileBuffer, mediaType) {
     moneda: null,
     banco_o_entidad: null,
     numero_operacion: null,
+    numeral: null,
+    pico: null,
     firmante: null,
     ci_firmante: null,
     emisor_factura: null,
