@@ -17,7 +17,7 @@ por cada documento encontrado, en este formato exacto. Si un dato no aparece, po
 
 [
   {
-    "tipo_comprobante": "transferencia" | "deposito" | "cheque" | "efectivo" | "factura" | "nota_credito" | "nota_remision" | "otro",
+    "tipo_comprobante": "transferencia" | "deposito" | "cheque" | "efectivo" | "factura" | "nota_credito" | "nota_remision" | "remision_combustible" | "recibo_viatico" | "otro",
     "nombre_cliente": string | null,
     "ruc_cliente": string | null,
     "nombre_beneficiario": string | null,
@@ -122,11 +122,35 @@ Reglas por tipo de documento:
   emisión (ej. "Traslado por ventas"). Dejá "monto" y "moneda" en null, ya que estas
   notas no tienen valor monetario.
 
-Para cualquier documento que NO sea factura, nota de crédito o nota de remisión
-(transferencia, depósito, cheque, efectivo), dejá "items" como un array vacío [],
-"condicion_venta" en null, y todos los campos de transporte (transportista, chofer,
-ci_chofer, vehiculo, matricula_vehiculo, direccion_salida, direccion_entrega,
-km_recorrido, motivo_traslado) en null.
+- REMISIÓN DE COMBUSTIBLE (ticket de una estación de servicio por combustible cargado a
+  un vehículo de la empresa, con precio): "nombre_cliente" es la empresa a la que se le
+  factura el combustible (ej. "TAPIRACUAI SA"), "ruc_cliente" su RUC. "emisor_factura" es
+  la estación de servicio que emite el ticket (ej. "PETROCHACO GUARAMBARE"), "ruc_emisor"
+  y "timbrado" si aparecen. "numero_factura" es el número de remisión (ej.
+  000-038-0005037). "chofer" es el nombre del chofer, "vehiculo" el tipo/marca si
+  aparece, "matricula_vehiculo" la chapa, "km_recorrido" el kilometraje registrado en el
+  ticket (aunque sea el odómetro y no una distancia recorrida, usá igual este campo).
+  "items" tiene una línea por cada combustible cargado: "descripcion" (ej. "Diesel S5"),
+  "cantidad" (litros), "costo_unitario" (precio por litro), "subtotal_item". "monto" es
+  el Total a Pagar. "concepto" incluí cualquier código de referencia manuscrito que
+  aparezca (ej. "Cod 22"), útil para cruzar con el recibo de viático relacionado.
+
+- RECIBO DE DINERO / VIÁTICO (comprobante de entrega de efectivo a un empleado, chofer o
+  tercero, para gastos o viáticos): "nombre_cliente" es quien RECIBE el dinero (la
+  persona que firma como "Aclaración", ej. el chofer), "ruc_cliente" su cédula si
+  aparece. "nombre_beneficiario" es quien ENTREGA el dinero (la empresa que paga, del
+  texto "Recibí(mos) de..."). "numero_operacion" es el número del recibo (arriba a la
+  izquierda). "monto" es el importe en guaraníes. "concepto" es el texto de "en concepto
+  de...", incluyendo cualquier código de referencia (ej. "Cod 22") para poder cruzarlo
+  con la remisión de combustible relacionada. "fecha_comprobante" es la fecha del
+  recibo.
+
+Para cualquier documento que NO sea factura, nota de crédito, nota de remisión o
+remisión de combustible, dejá "items" como un array vacío []. Para cualquier documento
+que no sea factura o nota de crédito, dejá "condicion_venta" en null. Para cualquier
+documento que no sea nota de remisión o remisión de combustible, dejá los campos de
+transporte (transportista, chofer, ci_chofer, vehiculo, matricula_vehiculo,
+direccion_salida, direccion_entrega, km_recorrido, motivo_traslado) en null.
 
 Usá "observaciones" solo para datos sueltos que no encajen en ningún campo anterior.
 Aunque solo haya un documento en la imagen, devolvé igual un array con un solo elemento.

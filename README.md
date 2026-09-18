@@ -1,8 +1,10 @@
 # Bot de WhatsApp para archivar comprobantes en Google Sheets
 
-Recibe fotos de comprobantes (transferencia, depósito, cheque, efectivo) por WhatsApp,
-extrae los datos automáticamente (cliente, RUC, factura, fecha, monto) y los guarda
-en una planilla de Google Sheets, dejando registro de quién envió cada comprobante.
+Recibe fotos de comprobantes (transferencia, depósito, cheque, efectivo, factura, nota
+de crédito, nota de remisión, remisión de combustible, recibo de dinero/viático) por
+WhatsApp, extrae los datos automáticamente (cliente, RUC, factura, fecha, monto, ítems,
+datos de transporte) y los guarda en una planilla de Google Sheets, dejando registro de
+quién envió cada comprobante.
 
 ## 1. Probar la extracción de datos YA MISMO (sin WhatsApp)
 
