@@ -15,18 +15,26 @@ const {
 
 const GRAPH_URL = "https://graph.facebook.com/v20.0";
 
-// Conversaciones en curso: por número de teléfono, guardamos los datos ya
-// extraídos de una foto mientras esperamos que el remitente responda alguna
-// pregunta de seguimiento (ej. a qué factura corresponde un pago).
+// --- Estado de conversación por número de teléfono ---
 //
-// IMPORTANTE: esto vive en la MEMORIA del proceso, no en Google Sheets ni en
-// una base de datos. Si el servidor se reinicia (ej. al desplegar un cambio
-// en Railway, o si se cae y se reinicia solo) las conversaciones pendientes
-// en ese momento se pierden, y la persona tendría que volver a mandar la
-// foto. Para el volumen de uso actual esto es aceptable; si más adelante se
-// vuelve un problema, se puede migrar este estado a la propia planilla o a
-// una base de datos.
-const conversacionesPendientes = new Map();
+// Para cada número, en un momento dado solo puede haber UNA sesión activa:
+//   { tipo: "procesando" }   -> se está leyendo la foto con IA (todavía no hay preguntas)
+//   { tipo: "preguntando", remitente, listaDatos, preguntas, indice, fechaMensaje }
+//                             -> esperando que responda una pregunta de seguimiento
+//
+// Si llega una foto NUEVA mientras el número ya tiene una sesión activa, esa
+// foto se guarda en una cola (colaPorTelefono) en vez de procesarse en
+// paralelo — así nunca se pisan los datos de dos fotos mandadas seguidas.
+// Apenas se termina de guardar la sesión actual, se toma automáticamente la
+// siguiente foto de la cola (si hay alguna) y se procesa.
+//
+// IMPORTANTE: todo esto vive en la MEMORIA del proceso, no en Google Sheets
+// ni en una base de datos. Si el servidor se reinicia (ej. al desplegar un
+// cambio) mientras hay sesiones o colas activas, se pierden y habría que
+// volver a mandar esas fotos. Para el volumen de uso actual esto es
+// aceptable.
+const sesionesPorTelefono = new Map();
+const colaPorTelefono = new Map();
 
 // Tipos de documento para los que tiene sentido preguntar a qué factura
 // corresponde el pago (no aplica a facturas, notas de crédito/remisión, etc,
@@ -64,9 +72,11 @@ app.post("/webhook", async (req, res) => {
       nombre: change.contacts?.[0]?.profile?.name || "",
     };
 
-    // Si este número tiene una conversación pendiente y nos escribió texto,
-    // lo tratamos como la respuesta a la pregunta que le hicimos.
-    if (message.type === "text" && conversacionesPendientes.has(remitente.telefono)) {
+    const sesionActual = sesionesPorTelefono.get(remitente.telefono);
+
+    // Si este número tiene una pregunta pendiente y nos escribió texto,
+    // lo tratamos como la respuesta a esa pregunta.
+    if (message.type === "text" && sesionActual?.tipo === "preguntando") {
       await manejarRespuesta(remitente, message.text?.body || "");
       return;
     }
@@ -86,9 +96,8 @@ app.post("/webhook", async (req, res) => {
     const esDocumentoPdf =
       message.type === "document" && message.document?.mime_type === "application/pdf";
 
-    // Si escribió texto (sin conversación pendiente) — probablemente un
-    // saludo o "hola" — le mostramos el menú de opciones en vez de procesar
-    // nada, así elige qué quiere registrar.
+    // Si escribió texto (sin pregunta pendiente) — probablemente un saludo o
+    // "hola" — le mostramos el menú de opciones en vez de procesar nada.
     if (message.type === "text") {
       await enviarMenuPrincipal(remitente.telefono);
       return;
@@ -102,32 +111,41 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    if (conversacionesPendientes.has(remitente.telefono)) {
-      // Llegó una foto nueva mientras había una pregunta sin responder:
-      // avisamos y descartamos la conversación anterior para no confundir.
-      conversacionesPendientes.delete(remitente.telefono);
-      await enviarMensajeTexto(
-        remitente.telefono,
-        "Se recibió una foto nueva antes de terminar de completar la anterior; la anterior se guardó solo con lo que ya se sabía."
-      );
-    }
-
     const mediaId = esImagen ? message.image.id : message.document.id;
     const { buffer, mediaType } = await descargarMedia(mediaId);
 
     // WhatsApp informa "timestamp" (segundos Unix) del momento en que se
-    // envió el mensaje, que es mucho más preciso que la hora del servidor,
-    // sobre todo si después hay preguntas de por medio antes de guardar.
+    // envió el mensaje, más preciso que la hora del servidor.
     const fechaMensaje = message.timestamp
       ? new Date(Number(message.timestamp) * 1000).toISOString()
       : new Date().toISOString();
 
-    const listaDatos = await extraerDatosComprobante(buffer, mediaType);
-    await iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje);
+    if (sesionActual) {
+      // Ya hay algo en curso para este número (procesando una foto anterior,
+      // o esperando que responda una pregunta): encolamos esta foto nueva en
+      // vez de procesarla en paralelo, para no perder ni mezclar datos.
+      const cola = colaPorTelefono.get(remitente.telefono) || [];
+      cola.push({ remitente, buffer, mediaType, fechaMensaje });
+      colaPorTelefono.set(remitente.telefono, cola);
+      await enviarMensajeTexto(
+        remitente.telefono,
+        "Recibí esta foto también — la proceso apenas terminemos con la anterior."
+      );
+      return;
+    }
+
+    await procesarImagen(remitente, buffer, mediaType, fechaMensaje);
   } catch (err) {
     console.error("Error procesando mensaje:", err);
   }
 });
+
+/** Marca al número como "ocupado", extrae los datos, y sigue el flujo normal. */
+async function procesarImagen(remitente, buffer, mediaType, fechaMensaje) {
+  sesionesPorTelefono.set(remitente.telefono, { tipo: "procesando" });
+  const listaDatos = await extraerDatosComprobante(buffer, mediaType);
+  await iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje);
+}
 
 /**
  * Decide si hace falta preguntar algo antes de guardar (ej. número de
@@ -139,10 +157,13 @@ async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje) {
   if (preguntas.length === 0) {
     await guardarComprobante(listaDatos, remitente, fechaMensaje);
     await enviarMensajeTexto(remitente.telefono, construirResumen(listaDatos));
+    sesionesPorTelefono.delete(remitente.telefono);
+    await procesarSiguienteEnCola(remitente.telefono);
     return;
   }
 
-  conversacionesPendientes.set(remitente.telefono, {
+  sesionesPorTelefono.set(remitente.telefono, {
+    tipo: "preguntando",
     remitente,
     listaDatos,
     preguntas,
@@ -179,8 +200,8 @@ function construirPreguntas(listaDatos) {
 
 /** Procesa la respuesta del usuario a la pregunta actual de su conversación. */
 async function manejarRespuesta(remitente, textoRespuesta) {
-  const estado = conversacionesPendientes.get(remitente.telefono);
-  if (!estado) return;
+  const estado = sesionesPorTelefono.get(remitente.telefono);
+  if (!estado || estado.tipo !== "preguntando") return;
 
   const preguntaActual = estado.preguntas[estado.indice];
   const respuestaLimpia = textoRespuesta.trim();
@@ -197,10 +218,28 @@ async function manejarRespuesta(remitente, textoRespuesta) {
     return;
   }
 
-  // No quedan más preguntas: guardamos todo junto y mandamos el resumen final.
-  conversacionesPendientes.delete(remitente.telefono);
+  // No quedan más preguntas: guardamos todo junto, mandamos el resumen, y
+  // recién ahí liberamos al número para que pueda procesarse lo que haya
+  // quedado esperando en la cola.
   await guardarComprobante(estado.listaDatos, estado.remitente, estado.fechaMensaje);
   await enviarMensajeTexto(estado.remitente.telefono, construirResumen(estado.listaDatos));
+  sesionesPorTelefono.delete(remitente.telefono);
+  await procesarSiguienteEnCola(remitente.telefono);
+}
+
+/** Si hay una foto esperando en la cola de este número, la procesa ahora. */
+async function procesarSiguienteEnCola(telefono) {
+  const cola = colaPorTelefono.get(telefono);
+  if (!cola || cola.length === 0) return;
+
+  const siguiente = cola.shift();
+  if (cola.length === 0) {
+    colaPorTelefono.delete(telefono);
+  } else {
+    colaPorTelefono.set(telefono, cola);
+  }
+
+  await procesarImagen(siguiente.remitente, siguiente.buffer, siguiente.mediaType, siguiente.fechaMensaje);
 }
 
 /** Descarga la imagen/documento desde los servidores de Meta usando el media id. */
