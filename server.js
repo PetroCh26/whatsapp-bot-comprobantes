@@ -52,6 +52,42 @@ const TIPOS_DE_PAGO = ["transferencia", "deposito", "cheque", "efectivo"];
 // Respuestas que interpretamos como "no sé / no aplica" en vez de un dato real.
 const RESPUESTAS_SALTEAR = ["no", "no se", "no sé", "n/a", "na", "-", "ns", "nose"];
 
+// Instrucciones específicas para cada tipo de documento, que se mandan
+// cuando la persona elige esa opción en el menú.
+const INSTRUCCIONES_POR_TIPO = {
+  transferencia:
+    "Perfecto, *Transferencia*. Mandame la foto o captura del comprobante bancario. " +
+    "Asegurate de que se vean bien: quién envía, el monto, la fecha y el número de operación.",
+  deposito:
+    "Perfecto, *Depósito*. Mandame la foto de la boleta de depósito, con el nombre del " +
+    "depositante, el número de boleta y el monto bien legibles.",
+  cheque:
+    "Perfecto, *Cheque*. Mandame la foto del cheque (podés mandar varios juntos en una " +
+    "sola foto si hace falta). Asegurate de que se vea el número de cheque, la fecha de " +
+    "pago y el monto.",
+  efectivo:
+    "Perfecto, *Efectivo*. Mandame la foto del recibo o comprobante de pago en efectivo, " +
+    "con el monto y la fecha bien visibles.",
+  factura:
+    "Perfecto, *Factura*. Mandame la foto o el PDF de la factura electrónica completa, " +
+    "que se vea el número de factura, el RUC del cliente y el detalle de ítems.",
+  nota_credito:
+    "Perfecto, *Nota de crédito*. Mandame la foto o el PDF completo, con el número de " +
+    "la nota y el motivo del ajuste bien visibles.",
+  nota_remision:
+    "Perfecto, *Nota de remisión*. Mandame la foto o el PDF completo, con los datos del " +
+    "destinatario, el transportista y la mercadería trasladada.",
+  remision_combustible:
+    "Perfecto, *Remisión de combustible*. Mandame la foto del ticket de la estación de " +
+    "servicio, con el vehículo, el chofer y el total a pagar bien legibles.",
+  recibo_viatico:
+    "Perfecto, *Recibo de viático*. Mandame la foto del recibo de dinero, con el nombre " +
+    "de quien lo recibe y el monto bien visibles.",
+  lectura_surtidor:
+    "Perfecto, *Lectura de surtidor*. Mandame la foto del contador del pico, que se vea " +
+    "bien el número de pico y la lectura completa del totalizador.",
+};
+
 // --- 1. Verificación del webhook (Meta la llama una sola vez al configurar) ---
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -94,14 +130,14 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Si tocó una opción del menú (lista interactiva), confirmamos y le
-    // pedimos que mande la foto/PDF de ese tipo de documento.
+    // Si tocó una opción del menú (lista interactiva), confirmamos con
+    // indicaciones específicas para ese tipo de documento.
     if (message.type === "interactive" && message.interactive?.type === "list_reply") {
       const opcion = message.interactive.list_reply;
-      await enviarMensajeTexto(
-        remitente.telefono,
-        `Perfecto, *${opcion.title}*. Mandame la foto o el PDF del documento cuando quieras.`
-      );
+      const instrucciones =
+        INSTRUCCIONES_POR_TIPO[opcion.id] ||
+        `Perfecto, *${opcion.title}*. Mandame la foto o el PDF del documento cuando quieras.`;
+      await enviarMensajeTexto(remitente.telefono, instrucciones);
       return;
     }
 
