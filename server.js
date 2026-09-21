@@ -337,33 +337,101 @@ async function enviarMensajeTexto(to, body) {
   });
 }
 
-function construirResumen(listaDatos) {
-  if (listaDatos.length === 1) {
-    const d = listaDatos[0];
-    return (
-      `✅ Comprobante registrado.\n\n` +
-      `Tipo: ${d.tipo_comprobante || "-"}\n` +
-      `Cliente: ${d.nombre_cliente || "-"}\n` +
-      `RUC: ${d.ruc_cliente || "-"}\n` +
-      `Nro Factura: ${d.numero_factura || "-"}\n` +
-      `Fecha: ${d.fecha_comprobante || "-"}\n` +
-      `Monto: ${d.monto ?? "-"} ${d.moneda || ""}\n\n` +
-      `Si algún dato está mal, respondé con la corrección y se actualizará.`
-    );
+// Nombres legibles para cada tipo de documento.
+const TIPO_DISPLAY = {
+  transferencia: "Transferencia",
+  deposito: "Depósito",
+  cheque: "Cheque",
+  efectivo: "Efectivo",
+  factura: "Factura",
+  nota_credito: "Nota de crédito",
+  nota_remision: "Nota de remisión",
+  remision_combustible: "Remisión de combustible",
+  recibo_viatico: "Recibo de viático",
+  lectura_surtidor: "Lectura de surtidor",
+  otro: "Otro",
+};
+
+// Etiqueta en español para cada campo (salvo tipo_comprobante, monto/moneda e
+// items, que se arman aparte porque necesitan formato especial).
+const ETIQUETAS_CAMPOS = {
+  nombre_cliente: "Cliente",
+  ruc_cliente: "RUC/CI cliente",
+  nombre_beneficiario: "Beneficiario",
+  cuenta_origen: "Cuenta origen",
+  cuenta_destino: "Cuenta destino",
+  concepto: "Concepto",
+  numero_factura: "Nro Documento",
+  condicion_venta: "Condición de venta",
+  fecha_comprobante: "Fecha",
+  fecha_pago: "Fecha de pago",
+  banco_o_entidad: "Banco/Entidad",
+  numero_operacion: "Nro Operación/Cheque",
+  numeral: "Numeral",
+  pico: "Pico",
+  firmante: "Firmante",
+  ci_firmante: "C.I. Firmante",
+  emisor_factura: "Emisor",
+  ruc_emisor: "RUC Emisor",
+  timbrado: "Timbrado",
+  transportista: "Transportista",
+  chofer: "Chofer",
+  ci_chofer: "C.I. Chofer",
+  vehiculo: "Vehículo",
+  matricula_vehiculo: "Matrícula",
+  direccion_salida: "Salida",
+  direccion_entrega: "Entrega",
+  km_recorrido: "Km",
+  motivo_traslado: "Motivo traslado",
+  observaciones: "Observaciones",
+};
+
+/** Arma el texto de un documento mostrando TODOS los campos que tengan valor. */
+function formatearDocumento(d) {
+  const lineas = [`Tipo: ${TIPO_DISPLAY[d.tipo_comprobante] || d.tipo_comprobante || "-"}`];
+
+  for (const [campo, etiqueta] of Object.entries(ETIQUETAS_CAMPOS)) {
+    const valor = d[campo];
+    if (valor === null || valor === undefined || valor === "") continue;
+    lineas.push(`${etiqueta}: ${valor}`);
   }
 
-  const items = listaDatos
-    .map(
-      (d, i) =>
-        `${i + 1}) ${d.tipo_comprobante || "-"} | ${d.nombre_cliente || "-"} | ` +
-        `${d.monto ?? "-"} ${d.moneda || ""} | Nro: ${d.numero_operacion || "-"} | Factura: ${d.numero_factura || "-"}`
-    )
-    .join("\n");
+  if (d.monto !== null && d.monto !== undefined) {
+    lineas.push(`Monto: ${d.monto} ${d.moneda || ""}`.trim());
+  }
+
+  if (Array.isArray(d.items) && d.items.length > 0) {
+    lineas.push("Ítems:");
+    d.items.forEach((item, i) => {
+      const partes = [];
+      if (item.codigo) partes.push(item.codigo);
+      if (item.descripcion) partes.push(item.descripcion);
+      if (item.unidad_medida) partes.push(item.unidad_medida);
+      if (item.cantidad != null) partes.push(`x${item.cantidad}`);
+      if (item.costo_unitario != null) partes.push(`@ ${item.costo_unitario}`);
+      if (item.subtotal_item != null) partes.push(`= ${item.subtotal_item}`);
+      lineas.push(`  ${i + 1}. ${partes.join(" ") || "-"}`);
+    });
+  }
+
+  return lineas.join("\n");
+}
+
+function construirResumen(listaDatos) {
+  const bloques = listaDatos.map((d, i) => {
+    const encabezado = listaDatos.length > 1 ? `*Documento ${i + 1} de ${listaDatos.length}*\n` : "";
+    return encabezado + formatearDocumento(d);
+  });
+
+  const titulo =
+    listaDatos.length > 1
+      ? `✅ Se registraron ${listaDatos.length} documentos. Revisá que todo esté correcto:`
+      : `✅ Registrado. Revisá que todo esté correcto:`;
 
   return (
-    `✅ Se registraron ${listaDatos.length} comprobantes de esta imagen:\n\n` +
-    `${items}\n\n` +
-    `Si algún dato está mal, respondé con la corrección y se actualizará.`
+    `${titulo}\n\n` +
+    bloques.join("\n\n— — —\n\n") +
+    `\n\nSi algún dato está mal, respondé con la corrección y se actualizará.`
   );
 }
 
