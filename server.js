@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { extraerDatosComprobante, corregirDatos } from "./ocr.js";
 import { guardarComprobante, actualizarComprobante, asegurarEncabezados } from "./sheets.js";
-import { subirFoto } from "./drive.js";
+import { subirFoto } from "./storage.js";
 
 const app = express();
 app.use(express.json());
