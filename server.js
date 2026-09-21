@@ -80,6 +80,11 @@ app.post("/webhook", async (req, res) => {
       nombre: change.contacts?.[0]?.profile?.name || "",
     };
 
+    console.log(
+      `Mensaje de ${remitente.telefono} — type: "${message.type}"` +
+        (message.type === "document" ? `, document.mime_type: "${message.document?.mime_type}"` : "")
+    );
+
     const sesionActual = sesionesPorTelefono.get(remitente.telefono);
 
     // Si este número tiene una pregunta pendiente y nos escribió texto,
