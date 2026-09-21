@@ -134,19 +134,8 @@ function filaResto(datos) {
   ];
 }
 
-/**
- * Agrega una o varias filas por cada comprobante detectado en la imagen.
- * Si un documento (factura/nota de crédito/nota de remisión) tiene varios
- * ítems, genera una fila por cada ítem, repitiendo los datos del documento.
- * @param {object[]} listaDatos - array de comprobantes extraídos por ocr.js
- * @param {object} remitente - { telefono, nombre }
- * @param {string} [fechaRegistro] - fecha ISO a usar como "Fecha de registro"
- *   (ej. la fecha real en que WhatsApp recibió la foto). Si no se pasa, se
- *   usa el momento actual como respaldo.
- */
-export async function guardarComprobante(listaDatos, remitente, fechaRegistro) {
-  const sheets = await getSheetsClient();
-  const registro = fechaRegistro || new Date().toISOString();
+/** Construye el array de filas (una por documento, o una por ítem si tiene varios). */
+function construirFilas(listaDatos, remitente, registro) {
   const filas = [];
 
   for (const datos of listaDatos) {
@@ -174,11 +163,59 @@ export async function guardarComprobante(listaDatos, remitente, fechaRegistro) {
     }
   }
 
-  await sheets.spreadsheets.values.append({
+  return filas;
+}
+
+/**
+ * Agrega una o varias filas por cada comprobante detectado en la imagen.
+ * Si un documento (factura/nota de crédito/nota de remisión) tiene varios
+ * ítems, genera una fila por cada ítem, repitiendo los datos del documento.
+ * @param {object[]} listaDatos - array de comprobantes extraídos por ocr.js
+ * @param {object} remitente - { telefono, nombre }
+ * @param {string} [fechaRegistro] - fecha ISO a usar como "Fecha de registro"
+ *   (ej. la fecha real en que WhatsApp recibió la foto). Si no se pasa, se
+ *   usa el momento actual como respaldo.
+ * @returns {Promise<string>} el rango exacto de celdas donde se escribió
+ *   (ej. "Comprobantes!A15:AP16"), útil para poder corregir esas mismas
+ *   filas después sin crear una fila nueva.
+ */
+export async function guardarComprobante(listaDatos, remitente, fechaRegistro) {
+  const sheets = await getSheetsClient();
+  const registro = fechaRegistro || new Date().toISOString();
+  const filas = construirFilas(listaDatos, remitente, registro);
+
+  const res = await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
     range: `${process.env.GOOGLE_SHEET_NAME}!A:${ULTIMA_COLUMNA}`,
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: filas },
   });
+
+  return res.data.updates?.updatedRange;
+}
+
+/**
+ * Sobrescribe filas ya guardadas anteriormente (por ejemplo, después de que
+ * el usuario pida una corrección por WhatsApp), en vez de crear filas nuevas.
+ * @param {string} rango - el rango exacto devuelto antes por guardarComprobante
+ *   o por una llamada anterior a esta misma función.
+ * @param {object[]} listaDatos - los datos ya corregidos.
+ * @param {object} remitente - { telefono, nombre } original.
+ * @param {string} fechaRegistro - la "Fecha de registro" original (se
+ *   mantiene igual, una corrección no cambia cuándo se registró la foto).
+ * @returns {Promise<string>} el rango actualizado (por si cambió el tamaño).
+ */
+export async function actualizarComprobante(rango, listaDatos, remitente, fechaRegistro) {
+  const sheets = await getSheetsClient();
+  const filas = construirFilas(listaDatos, remitente, fechaRegistro);
+
+  const res = await sheets.spreadsheets.values.update({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: rango,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: filas },
+  });
+
+  return res.data.updatedRange || rango;
 }
