@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { extraerDatosComprobante, corregirDatos } from "./ocr.js";
 import { guardarComprobante, actualizarComprobante, asegurarEncabezados } from "./sheets.js";
+import { subirFoto } from "./drive.js";
 
 const app = express();
 app.use(express.json());
@@ -198,24 +199,35 @@ app.post("/webhook", async (req, res) => {
 /** Marca al número como "ocupado", extrae los datos, y sigue el flujo normal. */
 async function procesarImagen(remitente, buffer, mediaType, fechaMensaje) {
   sesionesPorTelefono.set(remitente.telefono, { tipo: "procesando" });
-  const listaDatos = await extraerDatosComprobante(buffer, mediaType);
-  await iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje);
+
+  // Subimos la foto a Drive en paralelo con la extracción de datos, para no
+  // perder tiempo esperando una cosa antes de la otra.
+  const extension = mediaType === "application/pdf" ? "pdf" : mediaType.split("/")[1] || "jpg";
+  const nombreArchivo = `${remitente.telefono}_${fechaMensaje.replace(/[:.]/g, "-")}.${extension}`;
+
+  const [listaDatos, linkFoto] = await Promise.all([
+    extraerDatosComprobante(buffer, mediaType),
+    subirFoto(buffer, mediaType, nombreArchivo),
+  ]);
+
+  await iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje, linkFoto);
 }
 
 /**
  * Decide si hace falta preguntar algo antes de guardar (ej. número de
  * factura de un pago), o si ya podemos guardar directo en la planilla.
  */
-async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje) {
+async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje, linkFoto) {
   const preguntas = construirPreguntas(listaDatos);
 
   if (preguntas.length === 0) {
-    const rango = await guardarComprobante(listaDatos, remitente, fechaMensaje);
+    const rango = await guardarComprobante(listaDatos, remitente, fechaMensaje, linkFoto);
     ultimosRegistrosPorTelefono.set(remitente.telefono, {
       listaDatos,
       rango,
       remitente,
       fechaRegistro: fechaMensaje,
+      linkFoto,
       expira: Date.now() + VENTANA_CORRECCION_MS,
     });
     await enviarMensajeTexto(remitente.telefono, construirResumen(listaDatos));
@@ -231,6 +243,7 @@ async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje) {
     preguntas,
     indice: 0,
     fechaMensaje,
+    linkFoto,
   });
   await enviarMensajeTexto(remitente.telefono, preguntas[0].texto);
 }
@@ -283,12 +296,13 @@ async function manejarRespuesta(remitente, textoRespuesta) {
   // No quedan más preguntas: guardamos todo junto, mandamos el resumen, y
   // recién ahí liberamos al número para que pueda procesarse lo que haya
   // quedado esperando en la cola.
-  const rango = await guardarComprobante(estado.listaDatos, estado.remitente, estado.fechaMensaje);
+  const rango = await guardarComprobante(estado.listaDatos, estado.remitente, estado.fechaMensaje, estado.linkFoto);
   ultimosRegistrosPorTelefono.set(remitente.telefono, {
     listaDatos: estado.listaDatos,
     rango,
     remitente: estado.remitente,
     fechaRegistro: estado.fechaMensaje,
+    linkFoto: estado.linkFoto,
     expira: Date.now() + VENTANA_CORRECCION_MS,
   });
   await enviarMensajeTexto(estado.remitente.telefono, construirResumen(estado.listaDatos));
@@ -316,7 +330,8 @@ async function manejarCorreccion(remitente, textoCorreccion, registroReciente) {
     registroReciente.rango,
     corregido,
     registroReciente.remitente,
-    registroReciente.fechaRegistro
+    registroReciente.fechaRegistro,
+    registroReciente.linkFoto
   );
 
   ultimosRegistrosPorTelefono.set(remitente.telefono, {
