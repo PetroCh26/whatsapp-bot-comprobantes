@@ -254,3 +254,53 @@ export async function extraerDatosComprobante(fileBuffer, mediaType) {
     return [camposVacios()];
   }
 }
+
+/**
+ * Interpreta una corrección escrita en lenguaje natural (ej. "el monto era
+ * 5.000.000 no 500.000") y devuelve los datos ya corregidos, para
+ * sobrescribir la fila que ya se había guardado en la planilla.
+ * @param {object[]} listaDatosActual - los datos tal como están guardados hoy.
+ * @param {string} textoCorreccion - lo que escribió el usuario por WhatsApp.
+ * @returns {Promise<object[]|null>} el array corregido, o null si no se pudo
+ *   interpretar la corrección (para que el llamador pueda avisar y reintentar).
+ */
+export async function corregirDatos(listaDatosActual, textoCorreccion) {
+  const prompt = `Estos son los datos que ya están guardados de uno o varios documentos
+(array JSON), extraídos antes de una foto:
+
+${JSON.stringify(listaDatosActual)}
+
+El usuario pidió esta corrección, en sus propias palabras:
+"${textoCorreccion}"
+
+Devolvé el mismo array JSON completo, con exactamente el mismo número de elementos y
+las mismas claves en cada uno, pero con los campos corregidos según lo que pidió el
+usuario. NO cambies ningún campo que no se haya mencionado ni implicado en la
+corrección. Si hay más de un documento en el array y no queda claro a cuál se refiere,
+aplicá la corrección al que tenga más sentido según el contexto (por ejemplo, si
+menciona un monto, número o nombre que coincide con uno de ellos en particular).
+
+Devolvé SOLO el array JSON corregido, sin texto antes ni después, sin markdown.`;
+
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 4000,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  const raw = textBlock ? textBlock.text.trim() : "";
+  const cleaned = raw.replace(/^```json\s*|```$/g, "").trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    const lista = Array.isArray(parsed) ? parsed : [parsed];
+    // Si por algún motivo el modelo devuelve un número distinto de
+    // documentos al que había, algo salió mal: mejor no aplicar el cambio.
+    if (lista.length !== listaDatosActual.length) return null;
+    return lista;
+  } catch (err) {
+    console.error("No se pudo parsear la corrección:", raw);
+    return null;
+  }
+}
