@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
-import { extraerDatosComprobante } from "./ocr.js";
-import { guardarComprobante, asegurarEncabezados } from "./sheets.js";
+import { extraerDatosComprobante, corregirDatos } from "./ocr.js";
+import { guardarComprobante, actualizarComprobante, asegurarEncabezados } from "./sheets.js";
 
 const app = express();
 app.use(express.json());
@@ -35,6 +35,14 @@ const GRAPH_URL = "https://graph.facebook.com/v20.0";
 // aceptable.
 const sesionesPorTelefono = new Map();
 const colaPorTelefono = new Map();
+
+// Último documento guardado por cada número, disponible por un tiempo para
+// que la persona pueda corregirlo escribiendo en lenguaje natural (ej. "el
+// monto era 5.000.000 no 500.000"). Guarda el rango exacto de celdas donde
+// se escribió, para poder sobrescribir esas mismas filas en vez de crear
+// filas nuevas cada vez que se corrige algo.
+const ultimosRegistrosPorTelefono = new Map();
+const VENTANA_CORRECCION_MS = 15 * 60 * 1000; // 15 minutos
 
 // Tipos de documento para los que tiene sentido preguntar a qué factura
 // corresponde el pago (no aplica a facturas, notas de crédito/remisión, etc,
@@ -96,9 +104,15 @@ app.post("/webhook", async (req, res) => {
     const esDocumentoPdf =
       message.type === "document" && message.document?.mime_type === "application/pdf";
 
-    // Si escribió texto (sin pregunta pendiente) — probablemente un saludo o
-    // "hola" — le mostramos el menú de opciones en vez de procesar nada.
+    // Si escribió texto (sin pregunta pendiente) y hay un documento reciente
+    // que todavía se puede corregir, lo tratamos como una corrección en vez
+    // de mostrar el menú.
     if (message.type === "text") {
+      const registroReciente = ultimosRegistrosPorTelefono.get(remitente.telefono);
+      if (registroReciente && registroReciente.expira > Date.now()) {
+        await manejarCorreccion(remitente, message.text?.body || "", registroReciente);
+        return;
+      }
       await enviarMenuPrincipal(remitente.telefono);
       return;
     }
@@ -155,7 +169,14 @@ async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje) {
   const preguntas = construirPreguntas(listaDatos);
 
   if (preguntas.length === 0) {
-    await guardarComprobante(listaDatos, remitente, fechaMensaje);
+    const rango = await guardarComprobante(listaDatos, remitente, fechaMensaje);
+    ultimosRegistrosPorTelefono.set(remitente.telefono, {
+      listaDatos,
+      rango,
+      remitente,
+      fechaRegistro: fechaMensaje,
+      expira: Date.now() + VENTANA_CORRECCION_MS,
+    });
     await enviarMensajeTexto(remitente.telefono, construirResumen(listaDatos));
     sesionesPorTelefono.delete(remitente.telefono);
     await procesarSiguienteEnCola(remitente.telefono);
@@ -221,10 +242,53 @@ async function manejarRespuesta(remitente, textoRespuesta) {
   // No quedan más preguntas: guardamos todo junto, mandamos el resumen, y
   // recién ahí liberamos al número para que pueda procesarse lo que haya
   // quedado esperando en la cola.
-  await guardarComprobante(estado.listaDatos, estado.remitente, estado.fechaMensaje);
+  const rango = await guardarComprobante(estado.listaDatos, estado.remitente, estado.fechaMensaje);
+  ultimosRegistrosPorTelefono.set(remitente.telefono, {
+    listaDatos: estado.listaDatos,
+    rango,
+    remitente: estado.remitente,
+    fechaRegistro: estado.fechaMensaje,
+    expira: Date.now() + VENTANA_CORRECCION_MS,
+  });
   await enviarMensajeTexto(estado.remitente.telefono, construirResumen(estado.listaDatos));
   sesionesPorTelefono.delete(remitente.telefono);
   await procesarSiguienteEnCola(remitente.telefono);
+}
+
+/**
+ * Interpreta una corrección en lenguaje natural sobre el último documento
+ * guardado de este número, y sobrescribe esas mismas filas en la planilla
+ * (no crea filas nuevas).
+ */
+async function manejarCorreccion(remitente, textoCorreccion, registroReciente) {
+  const corregido = await corregirDatos(registroReciente.listaDatos, textoCorreccion);
+
+  if (!corregido) {
+    await enviarMensajeTexto(
+      remitente.telefono,
+      "No pude entender bien esa corrección 🤔. ¿Podés reformularla, por ejemplo indicando qué dato estaba mal y cuál es el valor correcto?"
+    );
+    return;
+  }
+
+  const rangoNuevo = await actualizarComprobante(
+    registroReciente.rango,
+    corregido,
+    registroReciente.remitente,
+    registroReciente.fechaRegistro
+  );
+
+  ultimosRegistrosPorTelefono.set(remitente.telefono, {
+    ...registroReciente,
+    listaDatos: corregido,
+    rango: rangoNuevo,
+    expira: Date.now() + VENTANA_CORRECCION_MS,
+  });
+
+  await enviarMensajeTexto(
+    remitente.telefono,
+    `✅ Corregido. Así quedaron los datos ahora:\n\n${construirResumen(corregido)}`
+  );
 }
 
 /** Si hay una foto esperando en la cola de este número, la procesa ahora. */
