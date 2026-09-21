@@ -42,10 +42,11 @@ const SHEET_HEADERS = [
   "Km recorrido",
   "Motivo del traslado",
   "Observaciones",
+  "Foto",
   "Estado",
 ];
 
-const ULTIMA_COLUMNA = "AP"; // 42 columnas: A hasta AP
+const ULTIMA_COLUMNA = "AQ"; // 43 columnas: A hasta AQ
 
 async function getSheetsClient() {
   // En producción (Railway, Render, etc.) es más seguro pegar el contenido
@@ -105,7 +106,7 @@ function filaBase(datos, remitente, registro) {
 }
 
 /** Construye la parte de la fila posterior a las columnas de ítem. */
-function filaResto(datos) {
+function filaResto(datos, linkFoto) {
   return [
     datos.fecha_comprobante,
     datos.fecha_pago,
@@ -130,17 +131,18 @@ function filaResto(datos) {
     datos.km_recorrido,
     datos.motivo_traslado,
     datos.observaciones,
+    linkFoto || null,
     "Pendiente de revisión",
   ];
 }
 
 /** Construye el array de filas (una por documento, o una por ítem si tiene varios). */
-function construirFilas(listaDatos, remitente, registro) {
+function construirFilas(listaDatos, remitente, registro, linkFoto) {
   const filas = [];
 
   for (const datos of listaDatos) {
     const base = filaBase(datos, remitente, registro);
-    const resto = filaResto(datos);
+    const resto = filaResto(datos, linkFoto);
     const items = Array.isArray(datos.items) ? datos.items : [];
 
     if (items.length === 0) {
@@ -175,14 +177,16 @@ function construirFilas(listaDatos, remitente, registro) {
  * @param {string} [fechaRegistro] - fecha ISO a usar como "Fecha de registro"
  *   (ej. la fecha real en que WhatsApp recibió la foto). Si no se pasa, se
  *   usa el momento actual como respaldo.
+ * @param {string} [linkFoto] - link a la foto/PDF original ya subida a
+ *   Google Drive, para dejarlo guardado en la columna "Foto".
  * @returns {Promise<string>} el rango exacto de celdas donde se escribió
- *   (ej. "Comprobantes!A15:AP16"), útil para poder corregir esas mismas
+ *   (ej. "Comprobantes!A15:AQ16"), útil para poder corregir esas mismas
  *   filas después sin crear una fila nueva.
  */
-export async function guardarComprobante(listaDatos, remitente, fechaRegistro) {
+export async function guardarComprobante(listaDatos, remitente, fechaRegistro, linkFoto) {
   const sheets = await getSheetsClient();
   const registro = fechaRegistro || new Date().toISOString();
-  const filas = construirFilas(listaDatos, remitente, registro);
+  const filas = construirFilas(listaDatos, remitente, registro, linkFoto);
 
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -204,11 +208,13 @@ export async function guardarComprobante(listaDatos, remitente, fechaRegistro) {
  * @param {object} remitente - { telefono, nombre } original.
  * @param {string} fechaRegistro - la "Fecha de registro" original (se
  *   mantiene igual, una corrección no cambia cuándo se registró la foto).
+ * @param {string} [linkFoto] - el mismo link de la foto original (se
+ *   mantiene igual al corregir, no cambia la foto).
  * @returns {Promise<string>} el rango actualizado (por si cambió el tamaño).
  */
-export async function actualizarComprobante(rango, listaDatos, remitente, fechaRegistro) {
+export async function actualizarComprobante(rango, listaDatos, remitente, fechaRegistro, linkFoto) {
   const sheets = await getSheetsClient();
-  const filas = construirFilas(listaDatos, remitente, fechaRegistro);
+  const filas = construirFilas(listaDatos, remitente, fechaRegistro, linkFoto);
 
   const res = await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
