@@ -145,6 +145,8 @@ app.post("/webhook", async (req, res) => {
     const esImagen = message.type === "image";
     const esDocumentoPdf =
       message.type === "document" && message.document?.mime_type === "application/pdf";
+    const esDocumentoImagen =
+      message.type === "document" && (message.document?.mime_type || "").startsWith("image/");
 
     // Si escribió texto (sin pregunta pendiente) y hay un documento reciente
     // que todavía se puede corregir, lo tratamos como una corrección en vez
@@ -159,7 +161,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    if (!esImagen && !esDocumentoPdf) {
+    if (!esImagen && !esDocumentoPdf && !esDocumentoImagen) {
       await enviarMensajeTexto(
         remitente.telefono,
         "Por favor enviá una *foto* o un *PDF* del comprobante (transferencia, depósito, cheque, efectivo o factura)."
