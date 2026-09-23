@@ -6,7 +6,7 @@ import {
   guardarComprobante,
   actualizarComprobante,
   asegurarEncabezados,
-  obtenerTelefonosRegistradosHoy,
+  obtenerTiposRegistradosHoyPorTelefono,
 } from "./sheets.js";
 import { subirFoto } from "./storage.js";
 
@@ -148,6 +148,15 @@ app.post("/webhook", async (req, res) => {
     if (message.type === "text" && sesionActual?.tipo === "preguntando") {
       await manejarRespuesta(remitente, message.text?.body || "");
       return;
+    }
+
+    // Comando para admins: chequear manualmente las sucursales al instante.
+    if (message.type === "text" && ADMIN_PHONES.includes(remitente.telefono)) {
+      const textoNormalizado = (message.text?.body || "").trim().toLowerCase();
+      if (["verificar sucursales", "sucursales", "chequear sucursales"].includes(textoNormalizado)) {
+        await verificarSucursalesManual(remitente.telefono);
+        return;
+      }
     }
 
     // Sub-flujo de "Lectura de surtidor": si está esperando el nombre de la
@@ -695,19 +704,47 @@ const ADMIN_PHONES = (process.env.ADMIN_PHONES || "")
   .map((t) => t.trim())
   .filter(Boolean);
 
-/** Revisa qué sucursales todavía no registraron nada hoy, y avisa si falta alguna. */
+// Tipos de comprobante que CADA sucursal debe mandar todos los días (además
+// de solo "haber mandado algo"). Ej: "lectura_surtidor,transferencia". Si se
+// deja vacío, alcanza con que la sucursal haya mandado cualquier documento.
+const REQUISITOS_DIARIOS = (process.env.REQUISITOS_DIARIOS || "")
+  .split(",")
+  .map((t) => t.trim())
+  .filter(Boolean);
+
+/** Calcula, para cada sucursal, qué le falta mandar hoy (array de líneas de texto). */
+async function calcularSucursalesFaltantes() {
+  const tiposPorTelefono = await obtenerTiposRegistradosHoyPorTelefono();
+  const lineasFaltantes = [];
+
+  for (const [telefono, nombreSucursal] of Object.entries(SUCURSALES)) {
+    const tiposEnviados = tiposPorTelefono.get(telefono) || new Set();
+
+    if (REQUISITOS_DIARIOS.length === 0) {
+      // Sin requisitos específicos: alcanza con haber mandado cualquier cosa.
+      if (tiposEnviados.size === 0) lineasFaltantes.push(`• ${nombreSucursal}: no mandó nada hoy`);
+      continue;
+    }
+
+    const faltantes = REQUISITOS_DIARIOS.filter((tipo) => !tiposEnviados.has(tipo));
+    if (faltantes.length > 0) {
+      const nombresFaltantes = faltantes.map((tipo) => TIPO_DISPLAY[tipo] || tipo).join(", ");
+      lineasFaltantes.push(`• ${nombreSucursal}: falta ${nombresFaltantes}`);
+    }
+  }
+
+  return lineasFaltantes;
+}
+
+/** Chequeo automático (cron): revisa y avisa a los admins SOLO si falta algo. */
 async function verificarSucursales() {
   if (Object.keys(SUCURSALES).length === 0 || ADMIN_PHONES.length === 0) return;
 
   try {
-    const registrados = await obtenerTelefonosRegistradosHoy();
-    const faltantes = Object.entries(SUCURSALES).filter(([telefono]) => !registrados.has(telefono));
+    const lineasFaltantes = await calcularSucursalesFaltantes();
+    if (lineasFaltantes.length === 0) return; // todo lo requerido ya llegó, no hace falta avisar
 
-    if (faltantes.length === 0) return; // todas mandaron algo hoy, no hace falta avisar
-
-    const lista = faltantes.map(([, nombre]) => `• ${nombre}`).join("\n");
-    const mensaje = `⚠️ Todavía no llegó ningún documento hoy de:\n\n${lista}`;
-
+    const mensaje = `⚠️ Pendientes de hoy:\n\n${lineasFaltantes.join("\n")}`;
     for (const admin of ADMIN_PHONES) {
       await enviarMensajeTexto(admin, mensaje);
     }
@@ -716,19 +753,24 @@ async function verificarSucursales() {
   }
 }
 
+/** Chequeo manual (comando por WhatsApp): siempre responde, incluso si está todo bien. */
+async function verificarSucursalesManual(telefonoQuePregunta) {
+  try {
+    const lineasFaltantes = await calcularSucursalesFaltantes();
+    const mensaje =
+      lineasFaltantes.length > 0
+        ? `⚠️ Pendientes de hoy:\n\n${lineasFaltantes.join("\n")}`
+        : "✅ Todas las sucursales ya mandaron lo que corresponde hoy.";
+    await enviarMensajeTexto(telefonoQuePregunta, mensaje);
+  } catch (err) {
+    console.error("Error al verificar sucursales (manual):", err.message);
+    await enviarMensajeTexto(telefonoQuePregunta, "No pude hacer el chequeo, intentá de nuevo en un rato.");
+  }
+}
+
 // Corre todos los días a las 12:00 y a las 16:00, hora de Paraguay.
 cron.schedule("0 12 * * *", verificarSucursales, { timezone: "America/Asuncion" });
 cron.schedule("0 16 * * *", verificarSucursales, { timezone: "America/Asuncion" });
-
-// --- SOLO PARA PROBAR: dispara el chequeo de sucursales manualmente ---
-// Visitá https://tu-url-de-railway/test-verificar-sucursales?token=TU_VERIFY_TOKEN
-// Una vez confirmado que funciona, se puede borrar esta ruta (no es necesaria
-// para el funcionamiento normal del bot, que ya corre esto solo a las 12:00 y 16:00).
-app.get("/test-verificar-sucursales", async (req, res) => {
-  if (req.query.token !== WHATSAPP_VERIFY_TOKEN) return res.sendStatus(403);
-  await verificarSucursales();
-  res.send("Listo, revisá tu WhatsApp.");
-});
 
 app.listen(PORT, async () => {
   await asegurarEncabezados();
