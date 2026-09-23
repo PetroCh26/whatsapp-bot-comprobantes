@@ -22,6 +22,29 @@ const {
 
 const GRAPH_URL = "https://graph.facebook.com/v20.0";
 
+/**
+ * Convierte una fecha a texto legible en hora de Paraguay (America/Asuncion),
+ * en formato "YYYY-MM-DD HH:mm:ss" — se ordena bien alfabéticamente en la
+ * planilla, y no hace falta restarle horas a mano para leerla.
+ */
+function formatearFechaParaguay(fecha) {
+  const partes = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Asuncion",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(fecha);
+
+  const partesPorTipo = {};
+  for (const { type, value } of partes) partesPorTipo[type] = value;
+
+  return `${partesPorTipo.year}-${partesPorTipo.month}-${partesPorTipo.day} ${partesPorTipo.hour}:${partesPorTipo.minute}:${partesPorTipo.second}`;
+}
+
 // --- Estado de conversación por número de teléfono ---
 //
 // Para cada número, en un momento dado solo puede haber UNA sesión activa:
@@ -275,10 +298,12 @@ app.post("/webhook", async (req, res) => {
     const { buffer, mediaType } = await descargarMedia(mediaId);
 
     // WhatsApp informa "timestamp" (segundos Unix) del momento en que se
-    // envió el mensaje, más preciso que la hora del servidor.
-    const fechaMensaje = message.timestamp
-      ? new Date(Number(message.timestamp) * 1000).toISOString()
-      : new Date().toISOString();
+    // envió el mensaje, más preciso que la hora del servidor. Lo convertimos
+    // directamente a hora de Paraguay en formato legible (en vez de UTC/ISO
+    // crudo), para no tener que restar horas a mano en la planilla.
+    const fechaMensaje = formatearFechaParaguay(
+      message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date()
+    );
 
     if (sesionActual) {
       // Ya hay algo en curso para este número (procesando una foto anterior,
