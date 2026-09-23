@@ -1,7 +1,13 @@
 import "dotenv/config";
 import express from "express";
+import cron from "node-cron";
 import { extraerDatosComprobante, corregirDatos } from "./ocr.js";
-import { guardarComprobante, actualizarComprobante, asegurarEncabezados } from "./sheets.js";
+import {
+  guardarComprobante,
+  actualizarComprobante,
+  asegurarEncabezados,
+  obtenerTelefonosRegistradosHoy,
+} from "./sheets.js";
 import { subirFoto } from "./storage.js";
 
 const app = express();
@@ -676,6 +682,53 @@ function construirResumen(listaDatos) {
     `\n\nSi algún dato está mal, respondé con la corrección y se actualizará.`
   );
 }
+
+// --- Aviso diario si alguna sucursal no mandó nada ---
+//
+// SUCURSALES_JSON: mapa de "número de WhatsApp": "nombre de la sucursal".
+// ADMIN_PHONES: números (separados por coma) a los que avisar si falta algo.
+// Si cualquiera de las dos variables no está configurada, este chequeo
+// queda desactivado sin afectar el resto del bot.
+const SUCURSALES = process.env.SUCURSALES_JSON ? JSON.parse(process.env.SUCURSALES_JSON) : {};
+const ADMIN_PHONES = (process.env.ADMIN_PHONES || "")
+  .split(",")
+  .map((t) => t.trim())
+  .filter(Boolean);
+
+/** Revisa qué sucursales todavía no registraron nada hoy, y avisa si falta alguna. */
+async function verificarSucursales() {
+  if (Object.keys(SUCURSALES).length === 0 || ADMIN_PHONES.length === 0) return;
+
+  try {
+    const registrados = await obtenerTelefonosRegistradosHoy();
+    const faltantes = Object.entries(SUCURSALES).filter(([telefono]) => !registrados.has(telefono));
+
+    if (faltantes.length === 0) return; // todas mandaron algo hoy, no hace falta avisar
+
+    const lista = faltantes.map(([, nombre]) => `• ${nombre}`).join("\n");
+    const mensaje = `⚠️ Todavía no llegó ningún documento hoy de:\n\n${lista}`;
+
+    for (const admin of ADMIN_PHONES) {
+      await enviarMensajeTexto(admin, mensaje);
+    }
+  } catch (err) {
+    console.error("Error al verificar sucursales:", err.message);
+  }
+}
+
+// Corre todos los días a las 12:00 y a las 16:00, hora de Paraguay.
+cron.schedule("0 12 * * *", verificarSucursales, { timezone: "America/Asuncion" });
+cron.schedule("0 16 * * *", verificarSucursales, { timezone: "America/Asuncion" });
+
+// --- SOLO PARA PROBAR: dispara el chequeo de sucursales manualmente ---
+// Visitá https://tu-url-de-railway/test-verificar-sucursales?token=TU_VERIFY_TOKEN
+// Una vez confirmado que funciona, se puede borrar esta ruta (no es necesaria
+// para el funcionamiento normal del bot, que ya corre esto solo a las 12:00 y 16:00).
+app.get("/test-verificar-sucursales", async (req, res) => {
+  if (req.query.token !== WHATSAPP_VERIFY_TOKEN) return res.sendStatus(403);
+  await verificarSucursales();
+  res.send("Listo, revisá tu WhatsApp.");
+});
 
 app.listen(PORT, async () => {
   await asegurarEncabezados();
