@@ -27,6 +27,8 @@ const SHEET_HEADERS = [
   "Nro Operación / Cheque",
   "Numeral",
   "Pico",
+  "Estación",
+  "Tipo de combustible",
   "Firmante",
   "C.I. Firmante",
   "Emisor factura",
@@ -46,7 +48,7 @@ const SHEET_HEADERS = [
   "Estado",
 ];
 
-const ULTIMA_COLUMNA = "AQ"; // 43 columnas: A hasta AQ
+const ULTIMA_COLUMNA = "AS"; // 45 columnas: A hasta AS
 
 async function getSheetsClient() {
   // En producción (Railway, Render, etc.) es más seguro pegar el contenido
@@ -116,6 +118,8 @@ function filaResto(datos, linkFoto) {
     datos.numero_operacion,
     datos.numeral,
     datos.pico,
+    datos.estacion,
+    datos.tipo_combustible,
     datos.firmante,
     datos.ci_firmante,
     datos.emisor_factura,
