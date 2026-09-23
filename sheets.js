@@ -251,9 +251,14 @@ export async function obtenerTiposRegistradosHoyPorTelefono() {
   for (const fila of filas) {
     const [fechaRegistro, telefono, , , tipo] = fila;
     if (!fechaRegistro || !telefono) continue;
-    const fechaLocal = new Date(fechaRegistro).toLocaleDateString("en-CA", {
-      timeZone: "America/Asuncion",
-    });
+
+    // Las filas nuevas ya guardan la fecha en hora de Paraguay directamente
+    // ("YYYY-MM-DD HH:mm:ss"). Las filas viejas (de antes de este cambio)
+    // guardaban la fecha en UTC con "Z" al final, así que las convertimos.
+    const fechaLocal = fechaRegistro.endsWith("Z")
+      ? new Date(fechaRegistro).toLocaleDateString("en-CA", { timeZone: "America/Asuncion" })
+      : fechaRegistro.slice(0, 10);
+
     if (fechaLocal !== hoy) continue;
 
     if (!porTelefono.has(telefono)) porTelefono.set(telefono, new Set());
