@@ -184,11 +184,18 @@ app.post("/webhook", async (req, res) => {
         return;
       }
 
-      // "Lectura de surtidor" tiene un sub-flujo propio: primero preguntamos
-      // la estación y el tipo de combustible, y recién ahí habilitamos la foto.
+      // "Lectura de surtidor" tiene un sub-flujo propio: si ya sabemos de qué
+      // sucursal es este número (SUCURSALES_JSON), saltamos directo al menú
+      // de combustible; si no, preguntamos la estación como texto libre.
       if (opcion.id === "lectura_surtidor") {
-        armandoLecturaPorTelefono.set(remitente.telefono, { paso: "estacion" });
-        await enviarMensajeTexto(remitente.telefono, "¿A qué estación corresponde esta lectura?");
+        const estacionConocida = SUCURSALES[remitente.telefono];
+        if (estacionConocida) {
+          armandoLecturaPorTelefono.set(remitente.telefono, { paso: "combustible", estacion: estacionConocida });
+          await enviarMenuCombustible(remitente.telefono);
+        } else {
+          armandoLecturaPorTelefono.set(remitente.telefono, { paso: "estacion" });
+          await enviarMensajeTexto(remitente.telefono, "¿A qué estación corresponde esta lectura?");
+        }
         return;
       }
 
@@ -313,6 +320,17 @@ async function procesarImagen(remitente, buffer, mediaType, fechaMensaje, contex
     for (const datos of listaDatos) {
       datos.estacion = contextoExtra.estacion;
       datos.tipo_combustible = contextoExtra.tipo_combustible;
+    }
+  }
+
+  // Para cualquier otro documento (no solo lectura de surtidor), si el
+  // número que lo mandó es una sucursal conocida (SUCURSALES_JSON), dejamos
+  // igual registrada la estación — así queda trazabilidad de qué sucursal
+  // mandó cada comprobante, sin importar el tipo.
+  const estacionDelRemitente = SUCURSALES[remitente.telefono];
+  if (estacionDelRemitente) {
+    for (const datos of listaDatos) {
+      if (!datos.estacion) datos.estacion = estacionDelRemitente;
     }
   }
 
