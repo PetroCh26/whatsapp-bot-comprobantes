@@ -159,6 +159,9 @@ app.post("/webhook", async (req, res) => {
 
       if (opcion.id === "finalizar") {
         eligioTipoPorTelefono.delete(remitente.telefono);
+        ultimosRegistrosPorTelefono.delete(remitente.telefono);
+        armandoLecturaPorTelefono.delete(remitente.telefono);
+        contextoLecturaPorTelefono.delete(remitente.telefono);
         await enviarMensajeTexto(
           remitente.telefono,
           "¡Listo! Gracias por usar el bot 🙌. Escribime cuando quieras registrar algo más."
