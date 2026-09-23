@@ -72,7 +72,7 @@ const colaPorTelefono = new Map();
 // se escribió, para poder sobrescribir esas mismas filas en vez de crear
 // filas nuevas cada vez que se corrige algo.
 const ultimosRegistrosPorTelefono = new Map();
-const VENTANA_CORRECCION_MS = 15 * 60 * 1000; // 15 minutos
+const VENTANA_CORRECCION_MS = 5 * 60 * 1000; // 5 minutos
 
 // Números que ya eligieron un tipo de documento en el menú y todavía no
 // mandaron la foto correspondiente. El bot NO procesa una foto si el número
