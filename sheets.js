@@ -231,30 +231,34 @@ export async function actualizarComprobante(rango, listaDatos, remitente, fechaR
 }
 
 /**
- * Devuelve el conjunto de números de WhatsApp que ya registraron al menos un
- * comprobante hoy (según la hora de Paraguay), para poder avisar si alguna
- * sucursal todavía no mandó nada.
- * @returns {Promise<Set<string>>}
+ * Devuelve, para cada número de WhatsApp que registró algo hoy (según la
+ * hora de Paraguay), el conjunto de tipos de comprobante que mandó. Sirve
+ * para avisar si a una sucursal le falta mandar un tipo específico (ej.
+ * "lectura de surtidor"), no solo si mandó algo en general.
+ * @returns {Promise<Map<string, Set<string>>>} teléfono -> Set de tipo_comprobante
  */
-export async function obtenerTelefonosRegistradosHoy() {
+export async function obtenerTiposRegistradosHoyPorTelefono() {
   const sheets = await getSheetsClient();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${process.env.GOOGLE_SHEET_NAME}!A2:B`,
+    range: `${process.env.GOOGLE_SHEET_NAME}!A2:D`,
   });
 
   const filas = res.data.values || [];
   const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Asuncion" });
-  const telefonos = new Set();
+  const porTelefono = new Map();
 
   for (const fila of filas) {
-    const [fechaRegistro, telefono] = fila;
+    const [fechaRegistro, telefono, , tipo] = fila;
     if (!fechaRegistro || !telefono) continue;
     const fechaLocal = new Date(fechaRegistro).toLocaleDateString("en-CA", {
       timeZone: "America/Asuncion",
     });
-    if (fechaLocal === hoy) telefonos.add(telefono);
+    if (fechaLocal !== hoy) continue;
+
+    if (!porTelefono.has(telefono)) porTelefono.set(telefono, new Set());
+    if (tipo) porTelefono.get(telefono).add(tipo);
   }
 
-  return telefonos;
+  return porTelefono;
 }
