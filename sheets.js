@@ -4,6 +4,7 @@ const SHEET_HEADERS = [
   "Fecha de registro",
   "Registrado por (WhatsApp)",
   "Nombre remitente (WhatsApp)",
+  "Estación",
   "Tipo de comprobante",
   "Nombre cliente",
   "RUC cliente",
@@ -27,7 +28,6 @@ const SHEET_HEADERS = [
   "Nro Operación / Cheque",
   "Numeral",
   "Pico",
-  "Estación",
   "Tipo de combustible",
   "Firmante",
   "C.I. Firmante",
@@ -95,6 +95,7 @@ function filaBase(datos, remitente, registro) {
     registro,
     remitente.telefono,
     remitente.nombre || "",
+    datos.estacion,
     datos.tipo_comprobante,
     datos.nombre_cliente,
     datos.ruc_cliente,
@@ -118,7 +119,6 @@ function filaResto(datos, linkFoto) {
     datos.numero_operacion,
     datos.numeral,
     datos.pico,
-    datos.estacion,
     datos.tipo_combustible,
     datos.firmante,
     datos.ci_firmante,
@@ -241,7 +241,7 @@ export async function obtenerTiposRegistradosHoyPorTelefono() {
   const sheets = await getSheetsClient();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${process.env.GOOGLE_SHEET_NAME}!A2:D`,
+    range: `${process.env.GOOGLE_SHEET_NAME}!A2:E`,
   });
 
   const filas = res.data.values || [];
@@ -249,7 +249,7 @@ export async function obtenerTiposRegistradosHoyPorTelefono() {
   const porTelefono = new Map();
 
   for (const fila of filas) {
-    const [fechaRegistro, telefono, , tipo] = fila;
+    const [fechaRegistro, telefono, , , tipo] = fila;
     if (!fechaRegistro || !telefono) continue;
     const fechaLocal = new Date(fechaRegistro).toLocaleDateString("en-CA", {
       timeZone: "America/Asuncion",
