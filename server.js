@@ -52,6 +52,25 @@ const VENTANA_CORRECCION_MS = 15 * 60 * 1000; // 15 minutos
 // elegir en el menú antes de cada foto nueva.
 const eligioTipoPorTelefono = new Set();
 
+// Sub-flujo especial para "Lectura de surtidor": antes de habilitar la foto,
+// hay que preguntar la estación (texto libre) y el tipo de combustible (un
+// mini-menú aparte). Mientras se arma esto, el número tiene una entrada acá:
+//   { paso: "estacion" }                          -> esperando el nombre de la estación
+//   { paso: "combustible", estacion }              -> esperando que elija el combustible
+// Una vez completo, los datos quedan en contextoLecturaPorTelefono para
+// mezclarlos con lo que la IA extraiga de la foto del totalizador.
+const armandoLecturaPorTelefono = new Map();
+const contextoLecturaPorTelefono = new Map();
+
+const TIPOS_COMBUSTIBLE = [
+  { id: "combustible_comun89", title: "Común 89" },
+  { id: "combustible_especial93", title: "Especial 93" },
+  { id: "combustible_super97", title: "Súper 97" },
+  { id: "combustible_diesel", title: "Diesel" },
+  { id: "combustible_ultra", title: "Ultra" },
+  { id: "combustible_alcohol", title: "Alcohol" },
+];
+
 // Tipos de documento para los que tiene sentido preguntar a qué factura
 // corresponde el pago (no aplica a facturas, notas de crédito/remisión, etc,
 // que ya son la factura o no llevan número de factura propio).
@@ -125,6 +144,15 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+    // Sub-flujo de "Lectura de surtidor": si está esperando el nombre de la
+    // estación, este texto es la respuesta.
+    if (message.type === "text" && armandoLecturaPorTelefono.get(remitente.telefono)?.paso === "estacion") {
+      const estacion = (message.text?.body || "").trim();
+      armandoLecturaPorTelefono.set(remitente.telefono, { paso: "combustible", estacion });
+      await enviarMenuCombustible(remitente.telefono);
+      return;
+    }
+
     // Si tocó una opción del menú (lista interactiva).
     if (message.type === "interactive" && message.interactive?.type === "list_reply") {
       const opcion = message.interactive.list_reply;
@@ -136,6 +164,33 @@ app.post("/webhook", async (req, res) => {
           "¡Listo! Gracias por usar el bot 🙌. Escribime cuando quieras registrar algo más."
         );
         return;
+      }
+
+      // "Lectura de surtidor" tiene un sub-flujo propio: primero preguntamos
+      // la estación y el tipo de combustible, y recién ahí habilitamos la foto.
+      if (opcion.id === "lectura_surtidor") {
+        armandoLecturaPorTelefono.set(remitente.telefono, { paso: "estacion" });
+        await enviarMensajeTexto(remitente.telefono, "¿A qué estación corresponde esta lectura?");
+        return;
+      }
+
+      // Si está esperando que elija el combustible, y tocó una de esas opciones.
+      const armando = armandoLecturaPorTelefono.get(remitente.telefono);
+      if (armando?.paso === "combustible") {
+        const combustible = TIPOS_COMBUSTIBLE.find((c) => c.id === opcion.id);
+        if (combustible) {
+          contextoLecturaPorTelefono.set(remitente.telefono, {
+            estacion: armando.estacion,
+            tipo_combustible: combustible.title,
+          });
+          armandoLecturaPorTelefono.delete(remitente.telefono);
+          eligioTipoPorTelefono.add(remitente.telefono);
+          await enviarMensajeTexto(
+            remitente.telefono,
+            `Perfecto, *${armando.estacion}* / *${combustible.title}*. Ahora mandame la foto del contador del pico.`
+          );
+          return;
+        }
       }
 
       // Marcamos que este número ya eligió un tipo, así se habilita mandar
@@ -186,6 +241,11 @@ app.post("/webhook", async (req, res) => {
     }
     eligioTipoPorTelefono.delete(remitente.telefono); // se consume con esta foto
 
+    // Si venía del sub-flujo de "Lectura de surtidor", tomamos la estación y
+    // el combustible ya elegidos para mezclarlos con lo que lea la IA.
+    const contextoExtra = contextoLecturaPorTelefono.get(remitente.telefono) || null;
+    contextoLecturaPorTelefono.delete(remitente.telefono);
+
     const mediaId = esImagen ? message.image.id : message.document.id;
     const { buffer, mediaType } = await descargarMedia(mediaId);
 
@@ -200,7 +260,7 @@ app.post("/webhook", async (req, res) => {
       // o esperando que responda una pregunta): encolamos esta foto nueva en
       // vez de procesarla en paralelo, para no perder ni mezclar datos.
       const cola = colaPorTelefono.get(remitente.telefono) || [];
-      cola.push({ remitente, buffer, mediaType, fechaMensaje });
+      cola.push({ remitente, buffer, mediaType, fechaMensaje, contextoExtra });
       colaPorTelefono.set(remitente.telefono, cola);
       await enviarMensajeTexto(
         remitente.telefono,
@@ -209,14 +269,14 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    await procesarImagen(remitente, buffer, mediaType, fechaMensaje);
+    await procesarImagen(remitente, buffer, mediaType, fechaMensaje, contextoExtra);
   } catch (err) {
     console.error("Error procesando mensaje:", err);
   }
 });
 
 /** Marca al número como "ocupado", extrae los datos, y sigue el flujo normal. */
-async function procesarImagen(remitente, buffer, mediaType, fechaMensaje) {
+async function procesarImagen(remitente, buffer, mediaType, fechaMensaje, contextoExtra) {
   sesionesPorTelefono.set(remitente.telefono, { tipo: "procesando" });
 
   // Subimos la foto a Drive en paralelo con la extracción de datos, para no
@@ -228,6 +288,15 @@ async function procesarImagen(remitente, buffer, mediaType, fechaMensaje) {
     extraerDatosComprobante(buffer, mediaType),
     subirFoto(buffer, mediaType, nombreArchivo),
   ]);
+
+  // Si venía del sub-flujo de estación/combustible, lo completamos en cada
+  // documento detectado (la IA no puede leer esto de la foto del totalizador).
+  if (contextoExtra) {
+    for (const datos of listaDatos) {
+      datos.estacion = contextoExtra.estacion;
+      datos.tipo_combustible = contextoExtra.tipo_combustible;
+    }
+  }
 
   await iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje, linkFoto);
 }
@@ -380,7 +449,13 @@ async function procesarSiguienteEnCola(telefono) {
     colaPorTelefono.set(telefono, cola);
   }
 
-  await procesarImagen(siguiente.remitente, siguiente.buffer, siguiente.mediaType, siguiente.fechaMensaje);
+  await procesarImagen(
+    siguiente.remitente,
+    siguiente.buffer,
+    siguiente.mediaType,
+    siguiente.fechaMensaje,
+    siguiente.contextoExtra
+  );
 }
 
 /** Descarga la imagen/documento desde los servidores de Meta usando el media id. */
@@ -421,6 +496,31 @@ function detectarTipoImagen(buffer, mimeTypeInformado) {
 }
 
 /** Envía el menú de opciones (lista interactiva) con los tipos de documento. */
+/** Envía el sub-menú con los tipos de combustible para "Lectura de surtidor". */
+async function enviarMenuCombustible(to) {
+  await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: { type: "text", text: "Tipo de combustible" },
+        body: { text: "¿Qué tipo de combustible es?" },
+        action: {
+          button: "Ver opciones",
+          sections: [{ title: "Combustibles", rows: TIPOS_COMBUSTIBLE.map(({ id, title }) => ({ id, title })) }],
+        },
+      },
+    }),
+  });
+}
+
 async function enviarMenuPrincipal(to) {
   await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
     method: "POST",
@@ -506,6 +606,8 @@ const ETIQUETAS_CAMPOS = {
   numero_operacion: "Nro Operación/Cheque",
   numeral: "Numeral",
   pico: "Pico",
+  estacion: "Estación",
+  tipo_combustible: "Tipo de combustible",
   firmante: "Firmante",
   ci_firmante: "C.I. Firmante",
   emisor_factura: "Emisor",
