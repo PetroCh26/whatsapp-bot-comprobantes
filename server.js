@@ -45,6 +45,13 @@ const colaPorTelefono = new Map();
 const ultimosRegistrosPorTelefono = new Map();
 const VENTANA_CORRECCION_MS = 15 * 60 * 1000; // 15 minutos
 
+// Números que ya eligieron un tipo de documento en el menú y todavía no
+// mandaron la foto correspondiente. El bot NO procesa una foto si el número
+// no está en este set — primero hay que elegir una opción del menú. Se
+// "consume" (se saca del set) apenas llega la foto, así que hay que volver a
+// elegir en el menú antes de cada foto nueva.
+const eligioTipoPorTelefono = new Set();
+
 // Tipos de documento para los que tiene sentido preguntar a qué factura
 // corresponde el pago (no aplica a facturas, notas de crédito/remisión, etc,
 // que ya son la factura o no llevan número de factura propio).
@@ -53,34 +60,21 @@ const TIPOS_DE_PAGO = ["transferencia", "deposito", "cheque", "efectivo"];
 // Respuestas que interpretamos como "no sé / no aplica" en vez de un dato real.
 const RESPUESTAS_SALTEAR = ["no", "no se", "no sé", "n/a", "na", "-", "ns", "nose"];
 
-// Instrucciones específicas para cada tipo de documento, que se mandan
-// cuando la persona elige esa opción en el menú.
+// Instrucciones específicas para cada categoría del menú, que se mandan
+// cuando la persona elige esa opción.
 const INSTRUCCIONES_POR_TIPO = {
-  transferencia:
-    "Perfecto, *Transferencia*. Mandame la foto o captura del comprobante bancario. " +
-    "Asegurate de que se vean bien: quién envía, el monto, la fecha y el número de operación.",
-  deposito:
-    "Perfecto, *Depósito*. Mandame la foto de la boleta de depósito, con el nombre del " +
-    "depositante, el número de boleta y el monto bien legibles.",
-  cheque:
-    "Perfecto, *Cheque*. Mandame la foto del cheque (podés mandar varios juntos en una " +
-    "sola foto si hace falta). Asegurate de que se vea el número de cheque, la fecha de " +
-    "pago y el monto.",
-  efectivo:
-    "Perfecto, *Efectivo*. Mandame la foto del recibo o comprobante de pago en efectivo, " +
-    "con el monto y la fecha bien visibles.",
+  pago:
+    "Perfecto, *Comprobante de pago*. Mandame la foto o captura de la transferencia, " +
+    "el depósito, el cheque o el recibo de efectivo. Asegurate de que se vean bien: " +
+    "quién paga, el monto, la fecha y el número de operación o cheque.",
   factura:
-    "Perfecto, *Factura*. Mandame la foto o el PDF de la factura electrónica completa, " +
-    "que se vea el número de factura, el RUC del cliente y el detalle de ítems.",
-  nota_credito:
-    "Perfecto, *Nota de crédito*. Mandame la foto o el PDF completo, con el número de " +
-    "la nota y el motivo del ajuste bien visibles.",
-  nota_remision:
-    "Perfecto, *Nota de remisión*. Mandame la foto o el PDF completo, con los datos del " +
-    "destinatario, el transportista y la mercadería trasladada.",
-  remision_combustible:
-    "Perfecto, *Remisión de combustible*. Mandame la foto del ticket de la estación de " +
-    "servicio, con el vehículo, el chofer y el total a pagar bien legibles.",
+    "Perfecto, *Factura / Nota de crédito*. Mandame la foto o el PDF completo, que se " +
+    "vea el número de documento, el RUC del cliente y el detalle de ítems o el motivo " +
+    "del ajuste.",
+  remision:
+    "Perfecto, *Nota de remisión*. Mandame la foto o el PDF completo: si es traslado de " +
+    "mercadería, que se vean los datos del destinatario y el transportista; si es un " +
+    "ticket de combustible, que se vea el vehículo, el chofer y el total a pagar.",
   recibo_viatico:
     "Perfecto, *Recibo de viático*. Mandame la foto del recibo de dinero, con el nombre " +
     "de quien lo recibe y el monto bien visibles.",
@@ -131,10 +125,22 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Si tocó una opción del menú (lista interactiva), confirmamos con
-    // indicaciones específicas para ese tipo de documento.
+    // Si tocó una opción del menú (lista interactiva).
     if (message.type === "interactive" && message.interactive?.type === "list_reply") {
       const opcion = message.interactive.list_reply;
+
+      if (opcion.id === "finalizar") {
+        eligioTipoPorTelefono.delete(remitente.telefono);
+        await enviarMensajeTexto(
+          remitente.telefono,
+          "¡Listo! Gracias por usar el bot 🙌. Escribime cuando quieras registrar algo más."
+        );
+        return;
+      }
+
+      // Marcamos que este número ya eligió un tipo, así se habilita mandar
+      // UNA foto. Hay que volver a elegir en el menú antes de la próxima.
+      eligioTipoPorTelefono.add(remitente.telefono);
       const instrucciones =
         INSTRUCCIONES_POR_TIPO[opcion.id] ||
         `Perfecto, *${opcion.title}*. Mandame la foto o el PDF del documento cuando quieras.`;
@@ -168,6 +174,17 @@ app.post("/webhook", async (req, res) => {
       );
       return;
     }
+
+    // Obligamos a elegir primero una opción del menú antes de aceptar la foto.
+    if (!eligioTipoPorTelefono.has(remitente.telefono)) {
+      await enviarMensajeTexto(
+        remitente.telefono,
+        "Antes de mandar la foto, elegí primero qué tipo de documento es 👇"
+      );
+      await enviarMenuPrincipal(remitente.telefono);
+      return;
+    }
+    eligioTipoPorTelefono.delete(remitente.telefono); // se consume con esta foto
 
     const mediaId = esImagen ? message.image.id : message.document.id;
     const { buffer, mediaType } = await descargarMedia(mediaId);
@@ -235,6 +252,7 @@ async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje, linkF
     await enviarMensajeTexto(remitente.telefono, construirResumen(listaDatos));
     sesionesPorTelefono.delete(remitente.telefono);
     await procesarSiguienteEnCola(remitente.telefono);
+    await enviarMenuPrincipal(remitente.telefono);
     return;
   }
 
@@ -310,6 +328,7 @@ async function manejarRespuesta(remitente, textoRespuesta) {
   await enviarMensajeTexto(estado.remitente.telefono, construirResumen(estado.listaDatos));
   sesionesPorTelefono.delete(remitente.telefono);
   await procesarSiguienteEnCola(remitente.telefono);
+  await enviarMenuPrincipal(remitente.telefono);
 }
 
 /**
@@ -424,16 +443,12 @@ async function enviarMenuPrincipal(to) {
             {
               title: "Tipos de documento",
               rows: [
-                { id: "transferencia", title: "Transferencia", description: "Comprobante de transferencia bancaria" },
-                { id: "deposito", title: "Depósito", description: "Boleta de depósito" },
-                { id: "cheque", title: "Cheque", description: "Foto de un cheque" },
-                { id: "efectivo", title: "Efectivo", description: "Recibo de pago en efectivo" },
-                { id: "factura", title: "Factura", description: "Factura electrónica" },
-                { id: "nota_credito", title: "Nota de crédito", description: "Nota de crédito electrónica" },
-                { id: "nota_remision", title: "Nota de remisión", description: "Remisión de mercadería" },
-                { id: "remision_combustible", title: "Remisión de combustible", description: "Ticket de carga de combustible" },
+                { id: "pago", title: "Comprobante de pago", description: "Transferencia, depósito, cheque o efectivo" },
+                { id: "factura", title: "Factura / N. Crédito", description: "Factura o nota de crédito electrónica" },
+                { id: "remision", title: "Nota de remisión", description: "Remisión de mercadería o combustible" },
                 { id: "recibo_viatico", title: "Recibo de viático", description: "Recibo de dinero entregado" },
                 { id: "lectura_surtidor", title: "Lectura de surtidor", description: "Foto del totalizador del pico" },
+                { id: "finalizar", title: "Finalizar", description: "Terminar la conversación por ahora" },
               ],
             },
           ],
