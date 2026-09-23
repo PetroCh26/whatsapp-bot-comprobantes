@@ -229,3 +229,32 @@ export async function actualizarComprobante(rango, listaDatos, remitente, fechaR
 
   return res.data.updatedRange || rango;
 }
+
+/**
+ * Devuelve el conjunto de números de WhatsApp que ya registraron al menos un
+ * comprobante hoy (según la hora de Paraguay), para poder avisar si alguna
+ * sucursal todavía no mandó nada.
+ * @returns {Promise<Set<string>>}
+ */
+export async function obtenerTelefonosRegistradosHoy() {
+  const sheets = await getSheetsClient();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `${process.env.GOOGLE_SHEET_NAME}!A2:B`,
+  });
+
+  const filas = res.data.values || [];
+  const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Asuncion" });
+  const telefonos = new Set();
+
+  for (const fila of filas) {
+    const [fechaRegistro, telefono] = fila;
+    if (!fechaRegistro || !telefono) continue;
+    const fechaLocal = new Date(fechaRegistro).toLocaleDateString("en-CA", {
+      timeZone: "America/Asuncion",
+    });
+    if (fechaLocal === hoy) telefonos.add(telefono);
+  }
+
+  return telefonos;
+}
