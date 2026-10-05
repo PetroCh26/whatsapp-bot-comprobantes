@@ -74,12 +74,24 @@ const colaPorTelefono = new Map();
 const ultimosRegistrosPorTelefono = new Map();
 const VENTANA_CORRECCION_MS = 5 * 60 * 1000; // 5 minutos
 
-// Números que ya eligieron un tipo de documento en el menú y todavía no
-// mandaron la foto correspondiente. El bot NO procesa una foto si el número
-// no está en este set — primero hay que elegir una opción del menú. Se
-// "consume" (se saca del set) apenas llega la foto, así que hay que volver a
-// elegir en el menú antes de cada foto nueva.
-const eligioTipoPorTelefono = new Set();
+// Números que ya eligieron un tipo de documento en el menú. El bot NO procesa
+// una foto si el número no tiene una elección vigente — primero hay que
+// elegir una opción del menú. Cada elección habilita todas las fotos que
+// lleguen durante VENTANA_FOTOS_MS (así se pueden mandar varias seguidas del
+// mismo tipo). La excepción es "Lectura de surtidor": ahí cada foto necesita
+// su propia estación/combustible, así que la elección vale para UNA sola foto
+// (marcada con unico: true).
+const eligioTipoPorTelefono = new Map(); // teléfono -> { vence, unico }
+const VENTANA_FOTOS_MS = 2 * 60 * 1000; // 2 minutos
+
+/** ¿Este número tiene una elección del menú vigente para mandar fotos? */
+function tieneEleccionVigente(telefono) {
+  const eleccion = eligioTipoPorTelefono.get(telefono);
+  return Boolean(eleccion && eleccion.vence > Date.now());
+}
+
+// Para no repetir el aviso "elegí primero del menú" por cada foto de una ráfaga.
+const ultimoRechazoPorTelefono = new Map();
 
 // Sub-flujo especial para "Lectura de surtidor": antes de habilitar la foto,
 // hay que preguntar la estación (texto libre) y el tipo de combustible (un
@@ -148,12 +160,26 @@ app.post("/webhook", async (req, res) => {
   // Respondemos rápido a Meta para que no reintente el envío
   res.sendStatus(200);
 
-  try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0]?.value;
-    const message = change?.messages?.[0];
-    if (!message) return; // no es un mensaje entrante (puede ser un "status")
+  // Meta puede AGRUPAR varios mensajes (y varias notificaciones) en un único
+  // aviso, sobre todo cuando se mandan varias fotos juntas. Hay que recorrer
+  // todo, no solo el primero, o las demás se pierden. Se procesan en orden.
+  for (const entry of req.body.entry || []) {
+    for (const cambio of entry.changes || []) {
+      const change = cambio.value;
+      for (const message of change?.messages || []) {
+        try {
+          await procesarMensaje(change, message);
+        } catch (err) {
+          console.error("Error procesando mensaje:", err);
+        }
+      }
+    }
+  }
+});
 
+/** Procesa UN mensaje entrante (texto, foto, menú, etc.). */
+async function procesarMensaje(change, message) {
+  {
     const remitente = {
       telefono: message.from,
       nombre: change.contacts?.[0]?.profile?.name || "",
@@ -232,7 +258,10 @@ app.post("/webhook", async (req, res) => {
             tipo_combustible: combustible.title,
           });
           armandoLecturaPorTelefono.delete(remitente.telefono);
-          eligioTipoPorTelefono.add(remitente.telefono);
+          eligioTipoPorTelefono.set(remitente.telefono, {
+            vence: Date.now() + VENTANA_FOTOS_MS,
+            unico: true, // cada foto de surtidor necesita su propia estación/combustible
+          });
           await enviarMensajeTexto(
             remitente.telefono,
             `Perfecto, *${armando.estacion}* / *${combustible.title}*. Ahora mandame la foto del contador del pico.`
@@ -242,12 +271,18 @@ app.post("/webhook", async (req, res) => {
       }
 
       // Marcamos que este número ya eligió un tipo, así se habilita mandar
-      // UNA foto. Hay que volver a elegir en el menú antes de la próxima.
-      eligioTipoPorTelefono.add(remitente.telefono);
+      // fotos durante los próximos 2 minutos (todas las que quiera).
+      eligioTipoPorTelefono.set(remitente.telefono, {
+        vence: Date.now() + VENTANA_FOTOS_MS,
+        unico: false,
+      });
       const instrucciones =
         INSTRUCCIONES_POR_TIPO[opcion.id] ||
         `Perfecto, *${opcion.title}*. Mandame la foto o el PDF del documento cuando quieras.`;
-      await enviarMensajeTexto(remitente.telefono, instrucciones);
+      await enviarMensajeTexto(
+        remitente.telefono,
+        `${instrucciones}\n\nPodés mandar varias fotos seguidas durante los próximos 2 minutos.`
+      );
       return;
     }
 
@@ -279,23 +314,53 @@ app.post("/webhook", async (req, res) => {
     }
 
     // Obligamos a elegir primero una opción del menú antes de aceptar la foto.
-    if (!eligioTipoPorTelefono.has(remitente.telefono)) {
-      await enviarMensajeTexto(
-        remitente.telefono,
-        "Antes de mandar la foto, elegí primero qué tipo de documento es 👇"
-      );
-      await enviarMenuPrincipal(remitente.telefono);
+    if (!tieneEleccionVigente(remitente.telefono)) {
+      // Si llegan varias fotos juntas sin haber elegido, avisamos una sola vez
+      // (no una vez por cada foto), para no llenar el chat de menús repetidos.
+      const ultimoAviso = ultimoRechazoPorTelefono.get(remitente.telefono) || 0;
+      if (Date.now() - ultimoAviso > 30 * 1000) {
+        ultimoRechazoPorTelefono.set(remitente.telefono, Date.now());
+        await enviarMensajeTexto(
+          remitente.telefono,
+          "Antes de mandar la foto, elegí primero qué tipo de documento es 👇"
+        );
+        await enviarMenuPrincipal(remitente.telefono);
+      }
       return;
     }
-    eligioTipoPorTelefono.delete(remitente.telefono); // se consume con esta foto
+    // La elección de "Lectura de surtidor" vale para una sola foto; las demás
+    // siguen vigentes hasta que se cumpla la ventana de 2 minutos.
+    if (eligioTipoPorTelefono.get(remitente.telefono)?.unico) {
+      eligioTipoPorTelefono.delete(remitente.telefono);
+    }
 
     // Si venía del sub-flujo de "Lectura de surtidor", tomamos la estación y
     // el combustible ya elegidos para mezclarlos con lo que lea la IA.
     const contextoExtra = contextoLecturaPorTelefono.get(remitente.telefono) || null;
     contextoLecturaPorTelefono.delete(remitente.telefono);
 
+    // Decidimos AHORA (sin ningún await de por medio) si este número ya está
+    // ocupado con otra foto, y si no lo está lo marcamos como ocupado de
+    // inmediato. Así, dos fotos que llegan casi juntas no pueden empezar a
+    // procesarse a la vez: la segunda siempre ve que ya hay algo en curso.
+    const yaOcupado = sesionesPorTelefono.has(remitente.telefono);
+    if (!yaOcupado) {
+      sesionesPorTelefono.set(remitente.telefono, { tipo: "procesando" });
+    }
+
     const mediaId = esImagen ? message.image.id : message.document.id;
-    const { buffer, mediaType } = await descargarMedia(mediaId);
+    let buffer, mediaType;
+    try {
+      ({ buffer, mediaType } = await descargarMedia(mediaId));
+    } catch (err) {
+      console.error("No se pudo descargar la foto:", err);
+      if (!yaOcupado) sesionesPorTelefono.delete(remitente.telefono);
+      await enviarMensajeTexto(
+        remitente.telefono,
+        "No pude descargar esa foto 😕. ¿Podés mandarla de nuevo?"
+      );
+      return;
+    }
 
     // WhatsApp informa "timestamp" (segundos Unix) del momento en que se
     // envió el mensaje, más preciso que la hora del servidor. Lo convertimos
@@ -305,7 +370,7 @@ app.post("/webhook", async (req, res) => {
       message.timestamp ? new Date(Number(message.timestamp) * 1000) : new Date()
     );
 
-    if (sesionActual) {
+    if (yaOcupado) {
       // Ya hay algo en curso para este número (procesando una foto anterior,
       // o esperando que responda una pregunta): encolamos esta foto nueva en
       // vez de procesarla en paralelo, para no perder ni mezclar datos.
@@ -320,13 +385,36 @@ app.post("/webhook", async (req, res) => {
     }
 
     await procesarImagen(remitente, buffer, mediaType, fechaMensaje, contextoExtra);
-  } catch (err) {
-    console.error("Error procesando mensaje:", err);
   }
-});
+}
 
 /** Marca al número como "ocupado", extrae los datos, y sigue el flujo normal. */
 async function procesarImagen(remitente, buffer, mediaType, fechaMensaje, contextoExtra) {
+  try {
+    await procesarImagenInterno(remitente, buffer, mediaType, fechaMensaje, contextoExtra);
+  } catch (err) {
+    console.error("Error procesando la foto:", err);
+
+    // Si falló a mitad de camino (leyendo la foto, guardando en la planilla,
+    // etc.) el número queda marcado como "procesando" para siempre y todas
+    // las fotos siguientes se encolarían sin procesarse nunca. Lo liberamos,
+    // avisamos, y seguimos con lo que haya quedado esperando en la cola.
+    if (sesionesPorTelefono.get(remitente.telefono)?.tipo === "procesando") {
+      sesionesPorTelefono.delete(remitente.telefono);
+      try {
+        await enviarMensajeTexto(
+          remitente.telefono,
+          "No pude procesar esa foto 😕. Probá mandarla de nuevo en un momento."
+        );
+      } catch (errAviso) {
+        console.error("No se pudo avisar del error:", errAviso);
+      }
+      await procesarSiguienteEnCola(remitente.telefono);
+    }
+  }
+}
+
+async function procesarImagenInterno(remitente, buffer, mediaType, fechaMensaje, contextoExtra) {
   sesionesPorTelefono.set(remitente.telefono, { tipo: "procesando" });
 
   // Subimos la foto a Drive en paralelo con la extracción de datos, para no
@@ -380,9 +468,7 @@ async function iniciarOFinalizarFlujo(remitente, listaDatos, fechaMensaje, linkF
       expira: Date.now() + VENTANA_CORRECCION_MS,
     });
     await enviarMensajeTexto(remitente.telefono, construirResumen(listaDatos));
-    sesionesPorTelefono.delete(remitente.telefono);
-    await procesarSiguienteEnCola(remitente.telefono);
-    await enviarMenuPrincipal(remitente.telefono);
+    await liberarYContinuar(remitente.telefono);
     return;
   }
 
@@ -456,9 +542,22 @@ async function manejarRespuesta(remitente, textoRespuesta) {
     expira: Date.now() + VENTANA_CORRECCION_MS,
   });
   await enviarMensajeTexto(estado.remitente.telefono, construirResumen(estado.listaDatos));
-  sesionesPorTelefono.delete(remitente.telefono);
-  await procesarSiguienteEnCola(remitente.telefono);
-  await enviarMenuPrincipal(remitente.telefono);
+  await liberarYContinuar(remitente.telefono);
+}
+
+/**
+ * Libera al número (ya terminó con su foto actual) y decide qué sigue: si hay
+ * más fotos esperando en la cola, procesa la siguiente (y el menú se mostrará
+ * recién cuando termine la última); si no queda nada, muestra el menú UNA vez.
+ */
+async function liberarYContinuar(telefono) {
+  sesionesPorTelefono.delete(telefono);
+  const hayMasEnCola = (colaPorTelefono.get(telefono) || []).length > 0;
+  if (hayMasEnCola) {
+    await procesarSiguienteEnCola(telefono);
+  } else {
+    await enviarMenuPrincipal(telefono);
+  }
 }
 
 /**
