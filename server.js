@@ -499,6 +499,7 @@ function construirPreguntas(listaDatos) {
       preguntas.push({
         docIndex,
         campo: "numero_factura",
+        validar: (t) => /\d/.test(t), // un número de factura debe tener al menos un dígito
         texto:
           `Para el ${datos.tipo_comprobante}${monto ? ` de ${monto}` : ""}${referencia}: ` +
           `¿a qué número de factura corresponde? (si no sabés, respondé "no")`,
@@ -517,6 +518,16 @@ async function manejarRespuesta(remitente, textoRespuesta) {
   const preguntaActual = estado.preguntas[estado.indice];
   const respuestaLimpia = textoRespuesta.trim();
   const seSaltea = RESPUESTAS_SALTEAR.includes(respuestaLimpia.toLowerCase());
+
+  // Si la respuesta no tiene pinta de ser válida (ej. "hola"), repetimos la
+  // pregunta en vez de guardar cualquier texto como dato.
+  if (!seSaltea && preguntaActual.validar && !preguntaActual.validar(respuestaLimpia)) {
+    await enviarMensajeTexto(
+      remitente.telefono,
+      `No entendí esa respuesta 🤔.\n\n${preguntaActual.texto}`
+    );
+    return;
+  }
 
   estado.listaDatos[preguntaActual.docIndex][preguntaActual.campo] = seSaltea
     ? null
@@ -658,14 +669,8 @@ function detectarTipoImagen(buffer, mimeTypeInformado) {
 /** Envía el menú de opciones (lista interactiva) con los tipos de documento. */
 /** Envía el sub-menú con los tipos de combustible para "Lectura de surtidor". */
 async function enviarMenuCombustible(to) {
-  await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
+  return enviarAGraph(
+    {
       to,
       type: "interactive",
       interactive: {
@@ -677,19 +682,14 @@ async function enviarMenuCombustible(to) {
           sections: [{ title: "Combustibles", rows: TIPOS_COMBUSTIBLE.map(({ id, title }) => ({ id, title })) }],
         },
       },
-    }),
-  });
+    },
+    "menú combustible"
+  );
 }
 
 async function enviarMenuPrincipal(to) {
-  await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
+  return enviarAGraph(
+    {
       to,
       type: "interactive",
       interactive: {
@@ -713,25 +713,38 @@ async function enviarMenuPrincipal(to) {
             },
           ],
         },
-      },
-    }),
-  });
+      }
+    },
+    "menú principal"
+  );
 }
 
 /** Envía un mensaje de texto de vuelta al remitente. */
+/** POST a la API de WhatsApp. Registra en el log cualquier falla (antes se ignoraba en silencio). */
+async function enviarAGraph(payload, etiqueta) {
+  try {
+    const res = await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
+    });
+    if (!res.ok) {
+      const detalle = await res.text().catch(() => "");
+      console.error(`❌ Falló el envío (${etiqueta}) a ${payload.to}: HTTP ${res.status} ${detalle}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`❌ Error de red enviando (${etiqueta}) a ${payload.to}:`, err.message);
+    return false;
+  }
+}
+
 async function enviarMensajeTexto(to, body) {
-  await fetch(`${GRAPH_URL}/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      text: { body },
-    }),
-  });
+  return enviarAGraph({ to, text: { body } }, "texto");
 }
 
 // Nombres legibles para cada tipo de documento.
